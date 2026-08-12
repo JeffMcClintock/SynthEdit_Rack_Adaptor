@@ -56,6 +56,7 @@
 #include "rack.hpp"          // the Rack mock (same include upstream compiles against)
 #include "RackPanelLayout.h"    // where the module says its controls are
 #include "RackDisplayState.h"   // how a custom display gets its DSP state
+#include "Extensions/PinConnection.h"  // which of our pins actually have a cable
 
 namespace rack_adaptor
 {
@@ -456,11 +457,9 @@ public:
 			displayStateBytes.resize(displayState->size);
 		}
 
-		// Every port has a GMPI pin and every pin has a buffer, so from the
-		// module's point of view everything is patched. Modules commonly
-		// return early from process() when no output is connected; this is
-		// what keeps them running. (See the normalling caveat on
-		// Port::isConnected in plugin.hpp.)
+		// Provisionally everything is patched. open() replaces this with what
+		// the host actually reports; a host too old to answer leaves it, which
+		// is the behaviour this adaptor had before it could ask.
 		for (auto& p : module->inputs)  p.connected = true;
 		for (auto& p : module->outputs) p.connected = true;
 
@@ -487,7 +486,43 @@ public:
 			args.sampleTime = 1.0f / args.sampleRate;
 		}
 
+		readPinConnections(phost);
+
 		return rc;
+	}
+
+	// Which of the module's ports actually have a cable on them.
+	//
+	// THIS IS NOT COSMETIC. A Rack module that normalises an unpatched input
+	// behaves differently, sometimes drastically: VCA-1 multiplies its level by
+	// its CV input whenever that input is "connected", so with everything
+	// reported as patched it passes SILENCE until something is plugged into CV.
+	// Random never reaches its internal source, Mixer and VCMixer never
+	// normalise a channel to the one above, Scope always picks its dead trigger
+	// input. Seventeen of Fundamental's thirty-eight read isConnected().
+	//
+	// ASKED ONCE, CACHED. SynthEdit rebuilds the DSP graph when a cable is
+	// patched, constructing a fresh processor, so connections cannot change
+	// under a live instance - and Rack modules call isConnected() every sample,
+	// where a host round-trip would be real cost for a value that cannot move.
+	//
+	// A host that does not offer the extension leaves every port marked
+	// connected, exactly as before.
+	void readPinConnections(gmpi::api::IUnknown* phost)
+	{
+		// Pin order is the contract generatePluginXml() emits and the
+		// constructor mirrors: inputs, then outputs, then everything else.
+		const int32_t pinCount = static_cast<int32_t>(audioIns.size() + audioOuts.size());
+
+		synthedit::PinConnections pins(phost, pinCount);
+		if (!pins.supported)
+			return;
+
+		for (std::size_t i = 0; i < audioIns.size(); ++i)
+			module->inputs[i].connected = pins.isConnected(static_cast<int32_t>(i));
+
+		for (std::size_t i = 0; i < audioOuts.size(); ++i)
+			module->outputs[i].connected = pins.isConnected(static_cast<int32_t>(audioIns.size() + i));
 	}
 
 	void onSetPins() override
