@@ -91,8 +91,11 @@ A working GMPI plugin:
 - **Patch points**, positioned from the module's `ModuleWidget`
 - **The panel**, drawn from the SVG the module names in `createPanel()`
 - **Knobs**, hit-tested and dragged, from the same widget
+- **Jacks**, drawn VCV-style and sized from the widget's declared size
+- **The context menu**, from `appendContextMenu()` — each index-pointer option
+  becomes an `enum` parameter and a right-click submenu
 
-Not yet supported: context menus, preset save/load (`dataToJson` is an inert
+Not yet supported: preset save/load beyond parameters (`dataToJson` is an inert
 stub), lights, custom widgets, and polyphony beyond mono.
 
 ## Pieces
@@ -133,4 +136,10 @@ define list on semicolons and mangles parentheses.
   idioms like `cv / 10.f` see real volts. Parameter pins are raw.
 - **`isConnected()`**: the adaptor drives every port, so a module never sees an
   unconnected input; one that normalises to a fallback will read 0V instead.
+- **Context-menu options are per-instance.** The editor and the processor own
+  separate module instances, so a module's `&module->panLaw` pointer is only
+  valid for the one that produced it. Each side calls `appendContextMenu()` on
+  its own module and binds its own pointer; only the parameter value crosses
+  between them. `readPanelLayout(model)` therefore leaves `MenuOption::target`
+  null — use `readPanelLayout(model, liveModule)` when you need to write.
 

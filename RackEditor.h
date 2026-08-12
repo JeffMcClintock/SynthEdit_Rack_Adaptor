@@ -39,6 +39,7 @@
 
 #include "helpers/GmpiPluginEditor.h"
 #include "helpers/SvgParser.h"
+#include "helpers/ContextMenuHelper.h"
 
 #include "RackPanelLayout.h"
 
@@ -80,14 +81,18 @@ public:
 		for (std::size_t i = 0; i < layout.numParams; ++i)
 			paramPins.emplace_back();
 
-		for (auto& pin : paramPins)
+		// Menu options come after the parameters, matching the <GUI> pin list.
+		for (std::size_t i = 0; i < layout.menu.size(); ++i)
+			menuPins.emplace_back();
+
+		auto redraw = [this](gmpi::editor::PinBase*)
 		{
-			pin.onUpdate = [this](gmpi::editor::PinBase*)
-			{
-				if (drawingHost)
-					drawingHost->invalidateRect(nullptr);
-			};
-		}
+			if (drawingHost)
+				drawingHost->invalidateRect(nullptr);
+		};
+
+		for (auto& pin : paramPins) pin.onUpdate = redraw;
+		for (auto& pin : menuPins)  pin.onUpdate = redraw;
 	}
 
 	// A FIXED-SIZE editor: the same answer whatever is offered, availableSize
@@ -158,6 +163,53 @@ public:
 		}
 
 		lastMouse = point;
+		return gmpi::ReturnCode::Ok;
+	}
+
+	// Right-click menu, built from what the module declared in
+	// appendContextMenu(). Each option is a submenu of its labels, and picking
+	// one writes the index to that option's parameter pin — which is what
+	// carries it to the processor's own module instance.
+	gmpi::ReturnCode populateContextMenu(gmpi::drawing::Point /*point*/,
+	                                     gmpi::api::IUnknown* contextMenuItemsSink) override
+	{
+		if (layout.menu.empty())
+			return gmpi::ReturnCode::Unhandled;
+
+		gmpi::shared_ptr<gmpi::api::IUnknown> unknown;
+		unknown = contextMenuItemsSink;
+		auto sink = unknown.as<gmpi::api::IContextItemSink>();
+		if (!sink)
+			return gmpi::ReturnCode::Fail;
+
+		ContextMenuHelper menu(sink.get());
+
+		for (std::size_t opt = 0; opt < layout.menu.size(); ++opt)
+		{
+			const auto& option = layout.menu[opt];
+
+			menu.beginSubMenu(option.name.c_str());
+
+			const int current = (opt < menuPins.size()) ? menuPins[opt].value : option.defaultValue;
+
+			for (std::size_t i = 0; i < option.labels.size(); ++i)
+			{
+				// Ticked to show the current choice, exactly as Rack does.
+				const int32_t flags = (static_cast<int>(i) == current)
+					? (int32_t)gmpi::api::PopupMenuFlags::Ticked : 0;
+
+				menu.addItem(option.labels[i].c_str(),
+					[this, opt, i](int32_t)
+					{
+						if (opt < menuPins.size())
+							menuPins[opt] = static_cast<int32_t>(i);
+					},
+					flags);
+			}
+
+			menu.endSubMenu();
+		}
+
 		return gmpi::ReturnCode::Ok;
 	}
 
@@ -290,7 +342,8 @@ private:
 	PanelLayout   layout;
 	gmpi::drawing::Size panelSize{ 100.0f, 100.0f };
 
-	std::deque<gmpi::editor::Pin<float>> paramPins;
+	std::deque<gmpi::editor::Pin<float>>   paramPins;
+	std::deque<gmpi::editor::Pin<int32_t>> menuPins;
 
 	int  dragging{ -1 };
 	gmpi::drawing::Point lastMouse{};

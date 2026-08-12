@@ -189,6 +189,27 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 		detail::appendEscaped(x, q.name.empty() ? ("Param " + std::to_string(i)) : q.name);
 		x += "\" datatype=\"float\" default=\"" + detail::formatFloat(q.defaultValue) + "\"/>\n";
 	}
+	// Context-menu options become parameters too, appended after the module's
+	// own. Rack keeps these as plain ints on the module and offers them through
+	// appendContextMenu(); as GMPI parameters they persist with the preset and
+	// show up in the host, and the editor still offers the right-click menu.
+	const auto menuOptions = readPanelLayout(model).menu;
+
+	for (size_t i = 0; i < menuOptions.size(); ++i)
+	{
+		const auto& m = menuOptions[i];
+		x += "    <Parameter id=\"" + std::to_string(probe->params.size() + i) + "\" name=\"";
+		detail::appendEscaped(x, m.name.empty() ? ("Option " + std::to_string(i)) : m.name);
+		x += "\" datatype=\"enum\" default=\"" + std::to_string(m.defaultValue) + "\" metadata=\"";
+
+		for (size_t l = 0; l < m.labels.size(); ++l)
+		{
+			if (l) x += ",";
+			detail::appendEscaped(x, m.labels[l]);
+		}
+		x += "\"/>\n";
+	}
+
 	x += "  </Parameters>\n";
 
 	// The editor registers separately (withId / registerEditor), but its pins
@@ -202,6 +223,12 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 		x += "    <Pin name=\"";
 		detail::appendEscaped(x, q.name.empty() ? ("Param " + std::to_string(i)) : q.name);
 		x += "\" private=\"true\" parameterId=\"" + std::to_string(i) + "\" />\n";
+	}
+	for (size_t i = 0; i < menuOptions.size(); ++i)
+	{
+		x += "    <Pin name=\"";
+		detail::appendEscaped(x, menuOptions[i].name);
+		x += "\" private=\"true\" parameterId=\"" + std::to_string(probe->params.size() + i) + "\" />\n";
 	}
 	x += "  </GUI>\n";
 
@@ -226,6 +253,10 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 	for (size_t i = 0; i < probe->params.size(); ++i)
 	{
 		x += "    <Pin parameterId=\"" + std::to_string(i) + "\" />\n";
+	}
+	for (size_t i = 0; i < menuOptions.size(); ++i)
+	{
+		x += "    <Pin parameterId=\"" + std::to_string(probe->params.size() + i) + "\" />\n";
 	}
 	x += "  </Audio>\n";
 
@@ -268,6 +299,14 @@ public:
 		for (size_t i = 0; i < module->params.size(); ++i)
 			paramPins.emplace_back();
 
+		// Context-menu options, bound to THIS module instance — the editor has
+		// its own copy, and writing the chosen index has to land in the one
+		// that is actually processing audio.
+		layout = readPanelLayout(*model, module.get());
+
+		for (size_t i = 0; i < layout.menu.size(); ++i)
+			menuPins.emplace_back();
+
 		// Every port has a GMPI pin and every pin has a buffer, so from the
 		// module's point of view everything is patched. Modules commonly
 		// return early from process() when no output is connected; this is
@@ -297,6 +336,14 @@ public:
 		// Parameter pins carry the module's raw values — no scaling.
 		for (size_t i = 0; i < paramPins.size(); ++i)
 			module->params[i].setValue(paramPins[i]);
+
+		// Menu options write straight into the module member the module itself
+		// handed us in appendContextMenu().
+		for (size_t i = 0; i < menuPins.size() && i < layout.menu.size(); ++i)
+		{
+			if (int* target = layout.menu[i].target)
+				*target = menuPins[i];
+		}
 	}
 
 	void subProcess(int sampleFrames)
@@ -323,6 +370,8 @@ private:
 	std::deque<gmpi::AudioInPin>  audioIns;
 	std::deque<gmpi::AudioOutPin> audioOuts;
 	std::deque<gmpi::FloatInPin>  paramPins;
+	std::deque<gmpi::IntInPin>    menuPins;
+	PanelLayout                   layout;      // menu targets bound to `module`
 	rack::Module::ProcessArgs     args{};
 };
 

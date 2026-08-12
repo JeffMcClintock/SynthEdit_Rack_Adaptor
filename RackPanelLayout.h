@@ -62,11 +62,23 @@ struct ControlLayout
 	}
 };
 
+// One entry from the module's appendContextMenu() — a list of labels selecting
+// an int by index. `target` points into the module instance that declared it,
+// so whoever built the layout can write the chosen index straight through.
+struct MenuOption
+{
+	std::string name;
+	std::vector<std::string> labels;
+	int* target{};
+	int  defaultValue{};
+};
+
 struct PanelLayout
 {
 	std::vector<ControlLayout> params;
 	std::vector<ControlLayout> inputs;
 	std::vector<ControlLayout> outputs;
+	std::vector<MenuOption>    menu;
 
 	// Whatever the module passed to createPanel(), e.g. "res/Fade.svg".
 	// Resolve against rack::PanelRegistry to get the bytes.
@@ -136,6 +148,57 @@ inline PanelLayout readPanelLayout(rack::Model& model)
 
 	collectPorts(widget->inputWidgets,  layout.numInputs,  probe->inputNames,  layout.inputs);
 	collectPorts(widget->outputWidgets, layout.numOutputs, probe->outputNames, layout.outputs);
+
+	// Context menu, e.g. Fade's "Pan law". Names, labels and current value only
+	// — `target` is deliberately left null, because it would point into
+	// `probe`, which is destroyed on the way out. A caller that needs to WRITE
+	// the chosen index uses the two-argument overload below and binds the menu
+	// to its own live module.
+	{
+		rack::Menu menu;
+		widget->appendContextMenu(&menu);
+
+		for (auto* item : menu.items)
+		{
+			if (!item || !item->isIndexPtr())
+				continue;
+
+			layout.menu.push_back({ item->name, item->labels, nullptr, *item->target });
+		}
+	}
+
+	return layout;
+}
+
+// As above, but binding the menu targets to a module the CALLER owns.
+//
+// readPanelLayout() builds and destroys its own probe, which would leave every
+// MenuOption::target dangling. The editor and the processor each hold their own
+// live module, and each needs the menu bound to that one — writing a chosen
+// index has to land in the instance that is actually running.
+inline PanelLayout readPanelLayout(rack::Model& model, rack::Module* liveModule)
+{
+	PanelLayout layout = readPanelLayout(model);
+
+	layout.menu.clear();
+
+	if (!liveModule)
+		return layout;
+
+	std::unique_ptr<rack::ModuleWidget> widget(model.createModuleWidget(liveModule));
+	if (!widget)
+		return layout;
+
+	rack::Menu menu;
+	widget->appendContextMenu(&menu);
+
+	for (auto* item : menu.items)
+	{
+		if (!item || !item->isIndexPtr())
+			continue;
+
+		layout.menu.push_back({ item->name, item->labels, item->target, *item->target });
+	}
 
 	return layout;
 }

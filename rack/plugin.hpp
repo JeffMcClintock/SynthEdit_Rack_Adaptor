@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -392,17 +393,62 @@ inline SvgPanel* createPanel(std::string lightSvg, std::string /*darkSvg*/ = "")
 }
 
 // ---------------------------------------------------------------------------
-// menus — MOCK
+// menus
+//
+// REAL, in the sense that matters: a module declares its context menu in
+// appendContextMenu(), and this records what it declared so the adaptor can
+// turn each entry into a GMPI parameter and a right-click menu.
+//
+// The recorded `target` is a pointer into the module instance that built the
+// menu. That is deliberate and is what makes this work across the editor/DSP
+// split: the editor and the processor each own a SEPARATE module instance, so
+// each calls appendContextMenu() on its own and binds its own pointer. Nothing
+// is shared between them but the parameter value.
 // ---------------------------------------------------------------------------
-struct MenuItem : Widget {};
-struct MenuSeparator : Widget {};
-
-struct Menu : Widget {};
-
-template<typename T>
-MenuItem* createIndexPtrSubmenuItem(std::string /*name*/, std::vector<std::string> /*labels*/, T* /*ptr*/)
+struct MenuItem : Widget
 {
-	return new MenuItem;   // MOCK
+	// An "index pointer" item: a submenu of labels selecting an int by index,
+	// which is how Rack modules expose enumerated options.
+	std::string name;
+	std::vector<std::string> labels;
+	int* target{};          // into the module instance that declared it
+
+	bool isSeparator{};
+	bool isIndexPtr() const { return target != nullptr && !labels.empty(); }
+};
+
+struct MenuSeparator : MenuItem
+{
+	MenuSeparator() { isSeparator = true; }
+};
+
+struct Menu : Widget
+{
+	std::vector<MenuItem*> items;
+
+	void addChild(Widget* w)
+	{
+		if (auto* item = dynamic_cast<MenuItem*>(w))
+			items.push_back(item);
+
+		Widget::addChild(w);
+	}
+};
+
+// Rack's signature takes T* so it works for enums as well as int. Only int-
+// sized targets are supported here; anything else is recorded without a
+// target and shows as an inert entry rather than silently writing garbage.
+template<typename T>
+MenuItem* createIndexPtrSubmenuItem(std::string name, std::vector<std::string> labels, T* ptr)
+{
+	auto* item = new MenuItem;
+	item->name = std::move(name);
+	item->labels = std::move(labels);
+
+	if constexpr (sizeof(T) == sizeof(int) && std::is_trivially_copyable_v<T>)
+		item->target = reinterpret_cast<int*>(ptr);
+
+	return item;
 }
 
 // ---------------------------------------------------------------------------
