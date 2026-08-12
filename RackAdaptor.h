@@ -484,21 +484,33 @@ public:
 				getBuffer(audioOuts[p])[i] = module->outputs[p].getVoltage() / voltsPerUnit;
 		}
 
-		sendLights();
+		sendLights(sampleFrames);
 	}
 
 	// Push each displayed light's brightness to the editor.
 	//
-	// Once per block, not per sample: a light is a GUI value, and modules
-	// already rate-limit their own updates with a ClockDivider. The pin's
-	// operator= only sends when the value actually changes, so a steady LED
-	// costs one comparison per block and no traffic at all.
+	// Once per chunk, not per sample: a light is a GUI value, and modules
+	// already rate-limit their own updates with a ClockDivider. setValue only
+	// sends when the value actually changes, so a steady LED costs one
+	// comparison per chunk and no traffic at all.
 	//
 	// Quantised to 1/256 for the same reason: a VU-style light computed with a
-	// smoothing filter never settles exactly, and without this every block
+	// smoothing filter never settles exactly, and without this every chunk
 	// would send a new value forever.
-	void sendLights()
+	//
+	// THE BLOCK POSITION IS NOT OPTIONAL HERE. An output pin may only default
+	// it while the processor sits exactly on an event boundary, which is true
+	// in onSetPins() and false throughout subProcess() — Processor asserts on
+	// it in debug builds. getBlockPosition() is the offset of the CHUNK we were
+	// handed, not of where we are inside it, so the value we just computed
+	// belongs to its last sample.
+	void sendLights(int sampleFrames)
 	{
+		if (lightPins.empty() || sampleFrames <= 0)
+			return;
+
+		const int blockPosition = getBlockPosition() + sampleFrames - 1;
+
 		for (std::size_t i = 0; i < lightPins.size(); ++i)
 		{
 			const int id = layout.displayedLightIds[i];
@@ -506,7 +518,7 @@ public:
 				continue;
 
 			const float b = std::clamp(module->lights[id].getBrightness(), 0.0f, 1.0f);
-			lightPins[i] = std::round(b * 256.0f) / 256.0f;
+			lightPins[i].setValue(std::round(b * 256.0f) / 256.0f, blockPosition);
 		}
 	}
 
