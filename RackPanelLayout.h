@@ -62,15 +62,40 @@ struct ControlLayout
 	}
 };
 
-// One entry from the module's appendContextMenu() — a list of labels selecting
-// an int by index. `target` points into the module instance that declared it,
-// so whoever built the layout can write the chosen index straight through.
+// One entry from the module's appendContextMenu(), kept in declaration order so
+// the menu reads the way the module wrote it — separators included.
+//
+// For an option, `target` points into the module instance that declared it, so
+// whoever built the layout can write the chosen index straight through, and
+// `paramIndex` is its position among the options only (separators do not get a
+// parameter, so they do not consume an index).
+enum class MenuOptionKind
+{
+	Separator,   // display only, no parameter
+	IndexPtr,    // submenu of labels selecting an int   (createIndexPtrSubmenuItem)
+	BoolPtr,     // single entry that ticks on and off   (createBoolPtrMenuItem)
+};
+
 struct MenuOption
 {
+	MenuOptionKind kind{ MenuOptionKind::Separator };
+
 	std::string name;
-	std::vector<std::string> labels;
-	int* target{};
-	int  defaultValue{};
+	std::string rightText;
+	std::vector<std::string> labels;   // IndexPtr only
+
+	int*  target{};       // IndexPtr — into the module that declared it
+	bool* boolTarget{};   // BoolPtr  — likewise
+	int   defaultValue{};
+
+	// Position among the options, skipping separators. Offsets the GMPI
+	// parameter id, so a separator never consumes one.
+	int paramIndex{ -1 };
+
+	// Position within this option's own pin container. Kinds use different pin
+	// types (int vs bool), so they are counted separately even though the pins
+	// are CONSTRUCTED in declaration order — see RackProcessor.
+	int slot{ -1 };
 };
 
 struct PanelLayout
@@ -88,6 +113,57 @@ struct PanelLayout
 	// same as the vector sizes above — a module may leave a port unplaced.
 	std::size_t numParams{}, numInputs{}, numOutputs{};
 };
+
+// Record what appendContextMenu() declared, in order. Separators are kept so
+// the menu reads as the module wrote it, but they carry no parameter — only
+// options are numbered, which is what paramIndex tracks.
+//
+// bindTargets is false when the module is a throwaway probe: a target pointing
+// into a module that is about to be destroyed is worse than no target at all.
+inline void collectMenu(rack::Menu& menu, PanelLayout& layout, bool bindTargets)
+{
+	int paramIndex = 0;
+	int intSlot = 0;
+	int boolSlot = 0;
+
+	for (auto* item : menu.items)
+	{
+		if (!item)
+			continue;
+
+		MenuOption option;
+		option.name = item->name;
+		option.rightText = item->rightText;
+
+		if (item->isSeparator)
+		{
+			option.kind = MenuOptionKind::Separator;
+		}
+		else if (item->isIndexPtr())
+		{
+			option.kind = MenuOptionKind::IndexPtr;
+			option.labels = item->labels;
+			option.target = bindTargets ? item->target : nullptr;
+			option.defaultValue = *item->target;
+			option.paramIndex = paramIndex++;
+			option.slot = intSlot++;
+		}
+		else if (item->isBoolPtr())
+		{
+			option.kind = MenuOptionKind::BoolPtr;
+			option.boolTarget = bindTargets ? item->boolTarget : nullptr;
+			option.defaultValue = *item->boolTarget ? 1 : 0;
+			option.paramIndex = paramIndex++;
+			option.slot = boolSlot++;
+		}
+		else
+		{
+			continue;   // a menu item shape this adaptor does not model yet
+		}
+
+		layout.menu.push_back(std::move(option));
+	}
+}
 
 // Construct the module and its widget purely to read the layout back, then
 // throw both away. Child widgets leak; this runs once per registration (and
@@ -158,13 +234,7 @@ inline PanelLayout readPanelLayout(rack::Model& model)
 		rack::Menu menu;
 		widget->appendContextMenu(&menu);
 
-		for (auto* item : menu.items)
-		{
-			if (!item || !item->isIndexPtr())
-				continue;
-
-			layout.menu.push_back({ item->name, item->labels, nullptr, *item->target });
-		}
+		collectMenu(menu, layout, /*bindTargets*/ false);
 	}
 
 	return layout;
@@ -192,13 +262,7 @@ inline PanelLayout readPanelLayout(rack::Model& model, rack::Module* liveModule)
 	rack::Menu menu;
 	widget->appendContextMenu(&menu);
 
-	for (auto* item : menu.items)
-	{
-		if (!item || !item->isIndexPtr())
-			continue;
-
-		layout.menu.push_back({ item->name, item->labels, item->target, *item->target });
-	}
+	collectMenu(menu, layout, /*bindTargets*/ true);
 
 	return layout;
 }

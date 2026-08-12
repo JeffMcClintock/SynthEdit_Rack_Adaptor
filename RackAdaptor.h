@@ -193,13 +193,26 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 	// own. Rack keeps these as plain ints on the module and offers them through
 	// appendContextMenu(); as GMPI parameters they persist with the preset and
 	// show up in the host, and the editor still offers the right-click menu.
-	const auto menuOptions = readPanelLayout(model).menu;
+	// Read once: the menu, the jack positions and which ports are placed all
+	// come from the same walk of the module widget.
+	const auto layout = readPanelLayout(model);
+	const auto& menuOptions = layout.menu;
 
-	for (size_t i = 0; i < menuOptions.size(); ++i)
+	for (const auto& m : menuOptions)
 	{
-		const auto& m = menuOptions[i];
-		x += "    <Parameter id=\"" + std::to_string(probe->params.size() + i) + "\" name=\"";
-		detail::appendEscaped(x, m.name.empty() ? ("Option " + std::to_string(i)) : m.name);
+		if (m.paramIndex < 0)
+			continue;   // separator — display only, it carries no parameter
+
+		x += "    <Parameter id=\"" + std::to_string(probe->params.size() + m.paramIndex) + "\" name=\"";
+		detail::appendEscaped(x, m.name.empty() ? ("Option " + std::to_string(m.paramIndex)) : m.name);
+
+		if (m.kind == MenuOptionKind::BoolPtr)
+		{
+			// A plain on/off; SynthEdit renders it as a checkbox in the host.
+			x += "\" datatype=\"bool\" default=\"" + std::to_string(m.defaultValue) + "\"/>\n";
+			continue;
+		}
+
 		x += "\" datatype=\"enum\" default=\"" + std::to_string(m.defaultValue) + "\" metadata=\"";
 
 		for (size_t l = 0; l < m.labels.size(); ++l)
@@ -224,39 +237,65 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 		detail::appendEscaped(x, q.name.empty() ? ("Param " + std::to_string(i)) : q.name);
 		x += "\" private=\"true\" parameterId=\"" + std::to_string(i) + "\" />\n";
 	}
-	for (size_t i = 0; i < menuOptions.size(); ++i)
+	for (const auto& m : menuOptions)
 	{
+		if (m.paramIndex < 0)
+			continue;
+
 		x += "    <Pin name=\"";
-		detail::appendEscaped(x, menuOptions[i].name);
-		x += "\" private=\"true\" parameterId=\"" + std::to_string(probe->params.size() + i) + "\" />\n";
+		detail::appendEscaped(x, m.name);
+		x += "\" private=\"true\" parameterId=\"" + std::to_string(probe->params.size() + m.paramIndex) + "\" />\n";
 	}
 	x += "  </GUI>\n";
 
 	// Audio pins — inputs, then outputs, then one pin per parameter. This
 	// order is mirrored exactly by RackProcessor's pin construction; the two
 	// must never diverge.
+	// A port that has a patch point is meant to be patched on the panel, so its
+	// structure-view pin is minimised to keep the module from sprouting a row
+	// of pins nobody uses — the same thing SE Patch Point out does with its own
+	// output. Ports WITHOUT a patch point stay visible: a module can declare a
+	// port and never place a widget for it, and minimising that one would leave
+	// it with no way in at all.
+	const auto hasPatchPoint = [](const std::vector<ControlLayout>& placed, size_t portId)
+	{
+		for (const auto& c : placed)
+		{
+			if (static_cast<size_t>(c.id) == portId)
+				return true;
+		}
+		return false;
+	};
+
 	x += "  <Audio>\n";
 	for (size_t i = 0; i < probe->inputs.size(); ++i)
 	{
 		const auto& n = probe->inputNames[i];
 		x += "    <Pin name=\"";
 		detail::appendEscaped(x, n.empty() ? ("In " + std::to_string(i + 1)) : n);
-		x += "\" datatype=\"float\" rate=\"audio\" />\n";
+		x += "\" datatype=\"float\" rate=\"audio\"";
+		if (opt.patchPoints && hasPatchPoint(layout.inputs, i))
+			x += " isMinimised=\"true\"";
+		x += " />\n";
 	}
 	for (size_t i = 0; i < probe->outputs.size(); ++i)
 	{
 		const auto& n = probe->outputNames[i];
 		x += "    <Pin name=\"";
 		detail::appendEscaped(x, n.empty() ? ("Out " + std::to_string(i + 1)) : n);
-		x += "\" datatype=\"float\" rate=\"audio\" direction=\"out\" />\n";
+		x += "\" datatype=\"float\" rate=\"audio\" direction=\"out\"";
+		if (opt.patchPoints && hasPatchPoint(layout.outputs, i))
+			x += " isMinimised=\"true\"";
+		x += " />\n";
 	}
 	for (size_t i = 0; i < probe->params.size(); ++i)
 	{
 		x += "    <Pin parameterId=\"" + std::to_string(i) + "\" />\n";
 	}
-	for (size_t i = 0; i < menuOptions.size(); ++i)
+	for (const auto& m : menuOptions)
 	{
-		x += "    <Pin parameterId=\"" + std::to_string(probe->params.size() + i) + "\" />\n";
+		if (m.paramIndex >= 0)
+			x += "    <Pin parameterId=\"" + std::to_string(probe->params.size() + m.paramIndex) + "\" />\n";
 	}
 	x += "  </Audio>\n";
 
@@ -264,7 +303,7 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 	// section above, not the host's document pin numbering — see
 	// generatePatchPoints.
 	if (opt.patchPoints)
-		x += generatePatchPoints(readPanelLayout(model), opt);
+		x += generatePatchPoints(layout, opt);
 
 	if (opt.extraXml)
 		x += opt.extraXml;
@@ -304,8 +343,20 @@ public:
 		// that is actually processing audio.
 		layout = readPanelLayout(*model, module.get());
 
-		for (size_t i = 0; i < layout.menu.size(); ++i)
-			menuPins.emplace_back();
+		// Pins must be CONSTRUCTED in declaration order, because GMPI numbers
+		// them by construction order and the XML lists them that way. The two
+		// kinds need different pin types, so they live in separate containers
+		// but are interleaved here — MenuOption::slot says which entry of its
+		// own container an option owns.
+		for (const auto& m : layout.menu)
+		{
+			switch (m.kind)
+			{
+			case MenuOptionKind::IndexPtr: menuIntPins.emplace_back();  break;
+			case MenuOptionKind::BoolPtr:  menuBoolPins.emplace_back(); break;
+			default: break;   // separators have no pin
+			}
+		}
 
 		// Every port has a GMPI pin and every pin has a buffer, so from the
 		// module's point of view everything is patched. Modules commonly
@@ -314,6 +365,16 @@ public:
 		// Port::isConnected in plugin.hpp.)
 		for (auto& p : module->inputs)  p.connected = true;
 		for (auto& p : module->outputs) p.connected = true;
+
+		// Put the module's loose state — internal DSP state, and members that
+		// are not parameters — into the values it documents, the way Rack's
+		// "Initialize" does. Modules are entitled to assume this has happened.
+		//
+		// It has to be HERE and cannot move to open() or later: the host pushes
+		// initial parameter values after construction, and a reset running
+		// afterwards would throw them away and snap every option back to its
+		// default.
+		module->onReset(rack::Module::ResetEvent{});
 
 		setSubProcess(&RackProcessor::subProcess);
 	}
@@ -339,10 +400,17 @@ public:
 
 		// Menu options write straight into the module member the module itself
 		// handed us in appendContextMenu().
-		for (size_t i = 0; i < menuPins.size() && i < layout.menu.size(); ++i)
+		for (const auto& m : layout.menu)
 		{
-			if (int* target = layout.menu[i].target)
-				*target = menuPins[i];
+			if (m.slot < 0)
+				continue;
+
+			const size_t slot = static_cast<size_t>(m.slot);
+
+			if (m.kind == MenuOptionKind::IndexPtr && m.target && slot < menuIntPins.size())
+				*m.target = menuIntPins[slot];
+			else if (m.kind == MenuOptionKind::BoolPtr && m.boolTarget && slot < menuBoolPins.size())
+				*m.boolTarget = menuBoolPins[slot];
 		}
 	}
 
@@ -370,7 +438,8 @@ private:
 	std::deque<gmpi::AudioInPin>  audioIns;
 	std::deque<gmpi::AudioOutPin> audioOuts;
 	std::deque<gmpi::FloatInPin>  paramPins;
-	std::deque<gmpi::IntInPin>    menuPins;
+	std::deque<gmpi::IntInPin>    menuIntPins;
+	std::deque<gmpi::BoolInPin>   menuBoolPins;
 	PanelLayout                   layout;      // menu targets bound to `module`
 	rack::Module::ProcessArgs     args{};
 };

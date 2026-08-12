@@ -25,7 +25,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdarg>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -41,8 +43,16 @@ struct json_t;
 inline json_t* json_object() { return nullptr; }                            // MOCK
 inline json_t* json_integer(long long) { return nullptr; }                  // MOCK
 inline long long json_integer_value(json_t*) { return 0; }                  // MOCK
+inline json_t* json_boolean(bool) { return nullptr; }                       // MOCK
+inline bool json_boolean_value(json_t*) { return false; }                   // MOCK
+inline json_t* json_real(double) { return nullptr; }                        // MOCK
+inline double json_real_value(json_t*) { return 0.0; }                      // MOCK
 inline json_t* json_object_get(json_t*, const char*) { return nullptr; }    // MOCK
 inline void json_object_set_new(json_t*, const char*, json_t*) {}           // MOCK
+
+// Rack's enum-block helper: ENUMS(IN_INPUTS, 12) declares IN_INPUTS plus a
+// _LAST entry so the following enumerator lands after the whole block.
+#define ENUMS(name, count) name, name##_LAST = name + (count) - 1
 
 namespace rack {
 
@@ -114,6 +124,82 @@ inline float_4 clamp(float_4 x, float lo, float hi)
 } // namespace simd
 
 // ---------------------------------------------------------------------------
+// dsp — small helpers modules keep as members. REAL: they are a few lines each
+// and stubbing them would give modules wrong behaviour rather than none.
+// ---------------------------------------------------------------------------
+namespace dsp {
+
+// Divides the sample clock, so lights and other slow work run every Nth frame.
+struct ClockDivider
+{
+	uint32_t clock{}, division{ 1 };
+
+	void setDivision(uint32_t d) { division = d ? d : 1; }
+	uint32_t getDivision() const { return division; }
+
+	bool process()
+	{
+		if (++clock >= division) { clock = 0; return true; }
+		return false;
+	}
+};
+
+// Peak meter with exponential decay, as Rack's. Feeds light brightness, so
+// nothing audible depends on it — but wrong is worse than absent.
+struct VuMeter2
+{
+	enum Mode { PEAK, RMS };
+
+	Mode  mode{ PEAK };
+	float v{};
+	float lambda{ 30.f };   // decay rate, /second
+
+	void process(float deltaTime, float value)
+	{
+		value = std::fabs(value);
+
+		if (value >= v)
+			v = value;                                  // attack instantly
+		else
+			v += (value - v) * lambda * deltaTime;       // decay
+	}
+
+	// bMin/bMax are dB thresholds; returns 0..1 across that span.
+	float getBrightness(float bMin, float bMax) const
+	{
+		if (v <= 0.f)
+			return 0.f;
+
+		const float db = 20.f * std::log10(v);
+
+		if (db <= bMin) return 0.f;
+		if (db >= bMax) return 1.f;
+
+		return (bMax > bMin) ? (db - bMin) / (bMax - bMin) : 1.f;
+	}
+};
+
+} // namespace dsp
+
+// ---------------------------------------------------------------------------
+// string — Rack's printf helper
+// ---------------------------------------------------------------------------
+namespace string {
+
+inline std::string f(const char* fmt, ...)
+{
+	char buf[256];
+	va_list args;
+	va_start(args, fmt);
+	const int n = std::vsnprintf(buf, sizeof(buf), fmt, args);
+	va_end(args);
+
+	return (n > 0) ? std::string(buf, (std::min)(n, (int)sizeof(buf) - 1)) : std::string();
+}
+
+} // namespace string
+
+// ---------------------------------------------------------------------------
 // engine
 // ---------------------------------------------------------------------------
 struct Param
@@ -126,6 +212,14 @@ struct Param
 struct Light
 {
 	float value{};
+
+	void  setBrightness(float b) { value = b; }
+	float getBrightness() const  { return value; }
+
+	// Rack's time-aware variant; the adaptor does not render lights, so the
+	// smoothing is not modelled.
+	void setBrightnessSmooth(float b, float /*deltaTime*/, float /*lambda*/ = 30.f) { value = b; }
+	void setSmoothBrightness(float b, float /*deltaTime*/) { value = b; }
 };
 
 struct Port
@@ -256,9 +350,28 @@ struct Module
 			outputNames[portId] = std::move(name);
 	}
 
-	void configBypass(int, int) {}                     // MOCK
+	// configSwitch is configParam plus display labels for the positions. The
+	// labels are not surfaced yet; the range and default are what matter.
+	ParamQuantity* configSwitch(int paramId, float minValue, float maxValue, float defaultValue,
+	                            std::string name = "", std::vector<std::string> /*labels*/ = {})
+	{
+		return configParam(paramId, minValue, maxValue, defaultValue, std::move(name));
+	}
 
-	virtual void onReset(const ResetEvent&) {}
+	ParamQuantity* configButton(int paramId, std::string name = "")
+	{
+		return configParam(paramId, 0.f, 1.f, 0.f, std::move(name));
+	}
+
+	void configBypass(int, int) {}                     // MOCK
+	void configLight(int, std::string = "") {}         // MOCK
+
+	// Rack has both forms and the event one dispatches to the legacy no-arg
+	// version, so a module may override either. Keep the forwarding: Unity
+	// overrides onReset(), Fade overrides onReset(const ResetEvent&).
+	virtual void onReset() {}
+	virtual void onReset(const ResetEvent&) { onReset(); }
+
 	virtual void process(const ProcessArgs&) {}
 
 	virtual json_t* dataToJson() { return nullptr; }
@@ -337,9 +450,26 @@ struct PortWidget  : Widget { Module* module{}; int portId{}; };
 // SVG, which the mock has no reader for, so the panel dimensions are stated
 // here instead. A PJ301M is an 8.7mm panel jack; the knobs are sized for
 // completeness and nothing reads them yet.
+struct LightWidget : Widget { Module* module{}; int firstLightId{}; };
+
+// Rack composes these as MediumLight<RedLight>: the size class wraps the
+// colour class.
+struct RedLight    : LightWidget {};
+struct YellowLight : LightWidget {};
+struct GreenLight  : LightWidget {};
+struct BlueLight   : LightWidget {};
+struct WhiteLight  : LightWidget {};
+
+template<typename TBase> struct TinyLight   : TBase { TinyLight()   { this->box.size = mm2px(Vec(1.088f, 1.088f)); } };
+template<typename TBase> struct SmallLight  : TBase { SmallLight()  { this->box.size = mm2px(Vec(2.176f, 2.176f)); } };
+template<typename TBase> struct MediumLight : TBase { MediumLight() { this->box.size = mm2px(Vec(3.176f, 3.176f)); } };
+template<typename TBase> struct LargeLight  : TBase { LargeLight()  { this->box.size = mm2px(Vec(5.179f, 5.179f)); } };
+
 struct ThemedScrew      : Widget {};
 struct RoundBlackKnob   : ParamWidget { RoundBlackKnob()   { box.size = mm2px(Vec(9.5f, 9.5f)); } };
 struct Trimpot          : ParamWidget { Trimpot()          { box.size = mm2px(Vec(7.0f, 7.0f)); } };
+struct CKSS             : ParamWidget { CKSS()             { box.size = mm2px(Vec(3.5f, 7.0f)); } };
+struct CKSSThree        : ParamWidget { CKSSThree()        { box.size = mm2px(Vec(3.5f, 9.5f)); } };
 
 // 23.7px is the literal size of Rack's res/ComponentLibrary/PJ301M.svg, so
 // the jack the editor draws is the size the real artwork would have been.
@@ -383,6 +513,59 @@ template<class T> T* createOutputCentered(Vec centre, Module* module, int portId
 	return w;
 }
 
+// The non-centred forms. Rack takes a TOP-LEFT here; box.pos holds the centre
+// throughout this mock, so convert on the way in — otherwise every control a
+// module places this way would be drawn and hit-tested half a widget off.
+inline Vec topLeftToCentre(Vec topLeft, Vec size)
+{
+	return { topLeft.x + size.x * 0.5f, topLeft.y + size.y * 0.5f };
+}
+
+template<class T> T* createParam(Vec topLeft, Module* module, int paramId)
+{
+	T* w = new T;
+	w->box.pos = topLeftToCentre(topLeft, w->box.size);
+	w->module = module;
+	w->paramId = paramId;
+	return w;
+}
+
+template<class T> T* createInput(Vec topLeft, Module* module, int portId)
+{
+	T* w = new T;
+	w->box.pos = topLeftToCentre(topLeft, w->box.size);
+	w->module = module;
+	w->portId = portId;
+	return w;
+}
+
+template<class T> T* createOutput(Vec topLeft, Module* module, int portId)
+{
+	T* w = new T;
+	w->box.pos = topLeftToCentre(topLeft, w->box.size);
+	w->module = module;
+	w->portId = portId;
+	return w;
+}
+
+template<class T> T* createLight(Vec topLeft, Module* module, int firstLightId)
+{
+	T* w = new T;
+	w->box.pos = topLeftToCentre(topLeft, w->box.size);
+	w->module = module;
+	w->firstLightId = firstLightId;
+	return w;
+}
+
+template<class T> T* createLightCentered(Vec centre, Module* module, int firstLightId)
+{
+	T* w = new T;
+	w->box.pos = centre;
+	w->module = module;
+	w->firstLightId = firstLightId;
+	return w;
+}
+
 // The light panel's path is kept — that is how the editor finds the art
 // without anyone naming it twice. The dark variant is ignored for now.
 inline SvgPanel* createPanel(std::string lightSvg, std::string /*darkSvg*/ = "")
@@ -407,14 +590,20 @@ inline SvgPanel* createPanel(std::string lightSvg, std::string /*darkSvg*/ = "")
 // ---------------------------------------------------------------------------
 struct MenuItem : Widget
 {
-	// An "index pointer" item: a submenu of labels selecting an int by index,
-	// which is how Rack modules expose enumerated options.
 	std::string name;
+	std::string rightText;   // Rack shows this right-aligned; kept for tooltips etc.
+
+	// An "index pointer" item: a submenu of labels selecting an int by index.
 	std::vector<std::string> labels;
-	int* target{};          // into the module instance that declared it
+	int* target{};           // into the module instance that declared it
+
+	// A "bool pointer" item: a single entry that ticks on and off.
+	bool* boolTarget{};
 
 	bool isSeparator{};
+
 	bool isIndexPtr() const { return target != nullptr && !labels.empty(); }
+	bool isBoolPtr()  const { return boolTarget != nullptr; }
 };
 
 struct MenuSeparator : MenuItem
@@ -447,6 +636,21 @@ MenuItem* createIndexPtrSubmenuItem(std::string name, std::vector<std::string> l
 
 	if constexpr (sizeof(T) == sizeof(int) && std::is_trivially_copyable_v<T>)
 		item->target = reinterpret_cast<int*>(ptr);
+
+	return item;
+}
+
+// A single on/off entry. Widely used across Fundamental — Mixer, Rescale,
+// SEQ3, SequentialSwitch, Unity, VCMixer — always with a bool member.
+template<typename T>
+MenuItem* createBoolPtrMenuItem(std::string name, std::string rightText, T* ptr)
+{
+	auto* item = new MenuItem;
+	item->name = std::move(name);
+	item->rightText = std::move(rightText);
+
+	if constexpr (std::is_same_v<T, bool>)
+		item->boolTarget = ptr;
 
 	return item;
 }

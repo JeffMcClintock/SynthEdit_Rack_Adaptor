@@ -14,6 +14,9 @@ A ported module's extra source code is two lines:
 **This repository contains no VCV Rack code and no VCV artwork.** You supply
 the module sources you want to port.
 
+**[PORTING.md](PORTING.md)** walks a real module through end to end — what to
+copy, what to write, and what to do when it does not compile.
+
 ---
 
 ## Licensing — read this before you build anything

@@ -34,6 +34,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <deque>
 #include <string>
 
@@ -73,7 +74,8 @@ public:
 		if (panelSvg)
 			svg = panelSvg;
 
-		panelSize = intrinsicSize(svg.c_str());
+		metrics = panelMetrics(svg.c_str());
+		panelSize = metrics.size;
 
 		// One pin per parameter, in paramId order, matching the <GUI> pin
 		// list generatePluginXml() emits. std::deque because the pins
@@ -82,8 +84,18 @@ public:
 			paramPins.emplace_back();
 
 		// Menu options come after the parameters, matching the <GUI> pin list.
-		for (std::size_t i = 0; i < layout.menu.size(); ++i)
-			menuPins.emplace_back();
+		// Constructed in declaration order because GMPI numbers pins that way;
+		// the two kinds need different types, so they are interleaved across
+		// two containers. Separators are display only and get no pin.
+		for (const auto& m : layout.menu)
+		{
+			switch (m.kind)
+			{
+			case MenuOptionKind::IndexPtr: menuIntPins.emplace_back();  break;
+			case MenuOptionKind::BoolPtr:  menuBoolPins.emplace_back(); break;
+			default: break;
+			}
+		}
 
 		auto redraw = [this](gmpi::editor::PinBase*)
 		{
@@ -91,8 +103,9 @@ public:
 				drawingHost->invalidateRect(nullptr);
 		};
 
-		for (auto& pin : paramPins) pin.onUpdate = redraw;
-		for (auto& pin : menuPins)  pin.onUpdate = redraw;
+		for (auto& pin : paramPins)    pin.onUpdate = redraw;
+		for (auto& pin : menuIntPins)  pin.onUpdate = redraw;
+		for (auto& pin : menuBoolPins) pin.onUpdate = redraw;
 	}
 
 	// A FIXED-SIZE editor: the same answer whatever is offered, availableSize
@@ -120,9 +133,20 @@ public:
 		// is entitled to hand us a dirty one.
 		g.clear(gmpi::drawing::Colors::Black);
 
-		const auto drawn = SvgParser::drawFromMemory(g, svg);
-		if (drawn.width > 0.0f && drawn.height > 0.0f)
-			panelSize = drawn;
+		// Only the panel art is scaled onto Rack's grid. The jacks and knobs
+		// below are already in Rack pixels — they come from the module's own
+		// widget — so they are drawn after the transform is restored.
+		if (metrics.drawScale != 1.0f)
+		{
+			const auto base = g.getTransform();
+			g.setTransform(gmpi::drawing::makeScale(metrics.drawScale, metrics.drawScale) * base);
+			SvgParser::drawFromMemory(g, svg);
+			g.setTransform(base);
+		}
+		else
+		{
+			SvgParser::drawFromMemory(g, svg);
+		}
 
 		drawJacks(g);
 		drawKnobIndicators(g);
@@ -184,13 +208,53 @@ public:
 
 		ContextMenuHelper menu(sink.get());
 
-		for (std::size_t opt = 0; opt < layout.menu.size(); ++opt)
+		// A separator is only meaningful BETWEEN our own entries. The host has
+		// already put its items above ours and separated them itself, so a
+		// leading one lands against the host's own divider and reads as
+		// belonging to the item above it. Held back and emitted only once
+		// something of ours follows, which also collapses runs and drops a
+		// trailing one.
+		bool pendingSeparator = false;
+		bool emittedAny = false;
+
+		for (const auto& option : layout.menu)
 		{
-			const auto& option = layout.menu[opt];
+			if (option.kind == MenuOptionKind::Separator)
+			{
+				pendingSeparator = emittedAny;
+				continue;
+			}
+
+			if (pendingSeparator)
+			{
+				menu.addSeparator();
+				pendingSeparator = false;
+			}
+
+			const std::size_t slot = static_cast<std::size_t>((std::max)(option.slot, 0));
+
+			if (option.kind == MenuOptionKind::BoolPtr)
+			{
+				// One entry that ticks on and off, as Rack shows it.
+				const bool on = (slot < menuBoolPins.size())
+					? menuBoolPins[slot].value : (option.defaultValue != 0);
+
+				menu.addItem(option.name.c_str(),
+					[this, slot, on](int32_t)
+					{
+						if (slot < menuBoolPins.size())
+							menuBoolPins[slot] = !on;
+					},
+					on ? (int32_t)gmpi::api::PopupMenuFlags::Ticked : 0);
+
+				emittedAny = true;
+				continue;
+			}
 
 			menu.beginSubMenu(option.name.c_str());
 
-			const int current = (opt < menuPins.size()) ? menuPins[opt].value : option.defaultValue;
+			const int current = (slot < menuIntPins.size())
+				? menuIntPins[slot].value : option.defaultValue;
 
 			for (std::size_t i = 0; i < option.labels.size(); ++i)
 			{
@@ -199,15 +263,16 @@ public:
 					? (int32_t)gmpi::api::PopupMenuFlags::Ticked : 0;
 
 				menu.addItem(option.labels[i].c_str(),
-					[this, opt, i](int32_t)
+					[this, slot, i](int32_t)
 					{
-						if (opt < menuPins.size())
-							menuPins[opt] = static_cast<int32_t>(i);
+						if (slot < menuIntPins.size())
+							menuIntPins[slot] = static_cast<int32_t>(i);
 					},
 					flags);
 			}
 
 			menu.endSubMenu();
+			emittedAny = true;
 		}
 
 		return gmpi::ReturnCode::Ok;
@@ -338,33 +403,99 @@ private:
 		}
 	}
 
+	// TWO DPIs, and mixing them up puts every control in the wrong place.
+	//
+	// Rack's panel grid is 1px = 1/75in — that is what mm2px() produces, so
+	// every jack and knob position from the module's widget is in 75-dpi
+	// pixels. SVG follows the CSS convention of 96dpi, and SvgParser converts
+	// physical units that way (mm -> n * 96/25.4), correctly.
+	//
+	// A panel authored in millimetres therefore draws 96/75 = 28% too large
+	// for the coordinates its own module places controls at. Most Fundamental
+	// panels are authored in bare user units that already ARE Rack pixels, so
+	// they need no correction and this is a no-op for them — but Inkscape
+	// defaults to mm, so it turns up.
+	//
+	// panelMetrics() answers both questions: the size to report to the host,
+	// in Rack pixels, and the scale to apply before letting SvgParser draw.
+	static constexpr float rackDpi = 75.0f;
+	static constexpr float cssDpi  = 96.0f;
+
+	struct PanelMetrics
+	{
+		gmpi::drawing::Size size{ 100.0f, 100.0f };   // Rack pixels
+		float drawScale{ 1.0f };                      // Rack px per CSS px
+	};
+
 	std::string   svg;
 	PanelLayout   layout;
 	gmpi::drawing::Size panelSize{ 100.0f, 100.0f };
+	PanelMetrics        metrics;
 
 	std::deque<gmpi::editor::Pin<float>>   paramPins;
-	std::deque<gmpi::editor::Pin<int32_t>> menuPins;
+	std::deque<gmpi::editor::Pin<int32_t>> menuIntPins;
+	std::deque<gmpi::editor::Pin<bool>>    menuBoolPins;
 
 	int  dragging{ -1 };
 	gmpi::drawing::Point lastMouse{};
 
-	// The panel's declared size, needed by measure() before anything has been
-	// drawn. SvgParser only reports it as a side effect of drawing, so read
-	// the two attributes directly.
-	static gmpi::drawing::Size intrinsicSize(const char* xml)
+
+	// Returns inches for a physical unit, or a negative value when the length
+	// is in bare user units / px (already Rack pixels by convention).
+	static float lengthInInches(const std::string& text, float& userUnits)
 	{
+		userUnits = static_cast<float>(std::atof(text.c_str()));
+
+		const auto firstAlpha = text.find_first_of("abcdefghijklmnopqrstuvwxyz%");
+		if (firstAlpha == std::string::npos)
+			return -1.0f;
+
+		const std::string unit = text.substr(firstAlpha);
+
+		if (unit == "mm") return userUnits / 25.4f;
+		if (unit == "cm") return userUnits / 2.54f;
+		if (unit == "in") return userUnits;
+		if (unit == "pt") return userUnits / 72.0f;
+		if (unit == "pc") return userUnits / 6.0f;
+
+		return -1.0f;   // px, %, or something unrecognised — treat as user units
+	}
+
+	static PanelMetrics panelMetrics(const char* xml)
+	{
+		PanelMetrics m;
+
 		tinyxml2::XMLDocument doc;
 		if (doc.Parse(xml) != tinyxml2::XML_SUCCESS)
-			return { 100.0f, 100.0f };
+			return m;
 
 		auto* svgElement = doc.FirstChildElement("svg");
 		if (!svgElement)
-			return { 100.0f, 100.0f };
+			return m;
 
-		const gmpi::drawing::Size s{ svgElement->FloatAttribute("width"),
-		                             svgElement->FloatAttribute("height") };
+		const char* w = svgElement->Attribute("width");
+		const char* h = svgElement->Attribute("height");
+		if (!w || !h)
+			return m;
 
-		return (s.width > 0.0f && s.height > 0.0f) ? s : gmpi::drawing::Size{ 100.0f, 100.0f };
+		float wUnits = 0.0f, hUnits = 0.0f;
+		const float wInches = lengthInInches(w, wUnits);
+		const float hInches = lengthInInches(h, hUnits);
+
+		if (wInches > 0.0f && hInches > 0.0f)
+		{
+			// Physical units: land it on Rack's grid, and tell the caller how
+			// much to shrink SvgParser's 96-dpi rendering to match.
+			m.size = { wInches * rackDpi, hInches * rackDpi };
+			m.drawScale = rackDpi / cssDpi;
+		}
+		else if (wUnits > 0.0f && hUnits > 0.0f)
+		{
+			m.size = { wUnits, hUnits };
+			m.drawScale = 1.0f;
+		}
+
+		return m;
 	}
 };
 
