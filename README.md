@@ -93,22 +93,27 @@ A working GMPI plugin:
 - **Parameters**, with the ranges and defaults from `configParam()`
 - **Patch points**, positioned from the module's `ModuleWidget`
 - **The panel**, drawn from the SVG the module names in `createPanel()`
-- **Knobs**, hit-tested and dragged, from the same widget
+- **Knobs**, drawn and dragged, from the same widget — cap, rim and pointer,
+  because Fundamental's panel SVGs carry no knob artwork (VCA's has not one
+  circle in it; Rack composites a component SVG at runtime)
 - **Jacks**, drawn VCV-style and sized from the widget's declared size
 - **The context menu**, from `appendContextMenu()` — each index-pointer option
   becomes an `enum` parameter and a right-click submenu
 - **Lights**, drawn from the widget's own base colours and driven by the DSP
+- **Whatever the module draws itself** — its `draw()` and `drawLayer()` run,
+  through a nanovg shim over gmpi_ui (`RackNanoVg.h`)
 
 Not yet supported: preset save/load beyond parameters (`dataToJson` is an inert
-stub), custom widgets, and polyphony beyond mono.
+stub), polyphony beyond mono, and pointer events into custom widgets
+(`onButton`, `onDragHover`, … are declared and overridable but not dispatched).
 
-Custom widgets are the one to watch. A module that draws its own display —
-Scope's trace, VCA-1's VU meter, Quantizer's note grid — compiles and runs, but
-its `draw()` is never called, because the adaptor's editor renders the panel
-and the standard controls rather than dispatching to a nanovg context. The
-module's *audio* is unaffected; the custom part of its panel is simply blank.
-Event handlers (`onButton`, `onDragHover`, …) are declared and overridable for
-the same reason, and are likewise not yet dispatched.
+**A custom display draws, but only from state the editor can see.** The editor
+and the processor own separate module instances and only parameter values cross
+between them, so a display fed by knobs draws correctly and one fed by DSP state
+draws nothing. Scope is the clear case: panel, graticule and trigger marker all
+render and track the knobs, and the trace is absent because the editor's module
+has zero channels. Closing that needs a state transport, which does not exist
+yet — see PORTING.md.
 
 ## Pieces
 

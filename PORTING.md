@@ -176,11 +176,27 @@ gain and a genuine mix look identical with one input.
 
 ## What you cannot fix in the mock
 
-Some things are not gaps but design limits, listed in the README: no custom
-widgets, mono only, and `dataToJson`/`dataFromJson` are inert (module state
-that is not a parameter does not persist). If a module leans on those, it will
-compile and run but behave incompletely — which is worth knowing before you
-spend an afternoon on why a display stays blank.
+Some things are not gaps but design limits, listed in the README: mono only,
+`dataToJson`/`dataFromJson` are inert (module state that is not a parameter
+does not persist), and pointer events do not reach a custom widget.
+
+The one that catches people is **what a custom display can see**. Its `draw()`
+does run — there is a nanovg shim over gmpi_ui — but it runs on the EDITOR's
+module instance, which never calls `process()`. Anything drawn from a knob is
+live, because parameters cross. Anything drawn from DSP state is not, because
+nothing carries it across yet. Scope shows this exactly: panel, graticule and
+trigger marker all correct and tracking the knobs, no trace.
+
+Two things worth knowing if you add a control type to the mock:
+
+- **Say whether it is a knob.** `ParamWidget::isKnob` defaults to false, and
+  only a knob gets a body and pointer drawn. Scope's `1x2` and `TRIG` are
+  latches, and a pointer on a latch reads as a tiny broken knob.
+- **A lit button's lamp is not the button.** `VCVLightLatch` is 9mm across and
+  the `MediumSimpleLight` inside it is 3.176mm. Paint the lamp at the button's
+  size and the whole bezel lights up. The lamp's size and its halo flag come
+  from the `TLight` template argument — see `lightAppearanceOf()`. Rack's
+  "Simple" variants are the same lamp with no glow.
 
 ---
 
