@@ -1827,14 +1827,36 @@ struct PortWidget  : Widget { Module* module{}; int portId{}; };
 // here instead. A PJ301M is an 8.7mm panel jack; the knobs are sized for
 // completeness and nothing reads them yet.
 
-struct LightWidget : Widget { Module* module{}; int firstLightId{}; };
-
-// Fundamental's plugin.hpp derives its lights from this and calls
-// addBaseColor() per colour.
-struct GrayModuleLightWidget : LightWidget
+// REAL, and read back: the editor draws these. `firstLightId` says which of
+// the module's lights this widget shows, and `baseColors` says in what colour
+// — one entry per consecutive light from firstLightId, which is how a
+// bi-colour light (Rack's GreenRedLight, Fundamental's YellowBlueLight) works.
+// The module drives the brightnesses; the widget only says how to paint them.
+struct LightWidget : Widget
 {
+	Module* module{};
+	int firstLightId{ -1 };
+
 	std::vector<NVGcolor> baseColors;
 	void addBaseColor(NVGcolor c) { baseColors.push_back(c); }
+
+	// The unlit lens and its outline. Fundamental's own light classes assign
+	// these (VCVBezelLightBig clears both), so they have to be here.
+	NVGcolor color{};
+	NVGcolor bgColor{};
+	NVGcolor borderColor{};
+};
+
+// Rack's default appearance for a panel light: a half-grey lens at a third
+// opacity, faintly outlined. Fundamental's plugin.hpp derives its lights from
+// this and calls addBaseColor() per colour.
+struct GrayModuleLightWidget : LightWidget
+{
+	GrayModuleLightWidget()
+	{
+		bgColor     = { 0.5f, 0.5f, 0.5f, 0.33f };
+		borderColor = { 0.0f, 0.0f, 0.0f, 0.15f };
+	}
 };
 
 // Vector art. MOCK: the adaptor draws panels through SvgParser and component
@@ -1928,20 +1950,40 @@ using ModuleLightWidget = ::rack::LightWidget;
 
 
 // Rack composes these as MediumLight<RedLight>: the size class wraps the
-// colour class.
-struct RedLight            : LightWidget {};
-struct YellowLight         : LightWidget {};
-struct GreenLight          : LightWidget {};
-struct BlueLight           : LightWidget {};
-struct WhiteLight          : LightWidget {};
-struct GreenRedLight     : LightWidget {};
-struct RedGreenBlueLight : LightWidget {};
+// colour class. Each states its colour(s) the same way a module's own light
+// class does — one base colour per consecutive light id — so the editor needs
+// no table of its own.
+struct RedLight    : GrayModuleLightWidget { RedLight()    { addBaseColor(SCHEME_RED);    } };
+struct YellowLight : GrayModuleLightWidget { YellowLight() { addBaseColor(SCHEME_YELLOW); } };
+struct GreenLight  : GrayModuleLightWidget { GreenLight()  { addBaseColor(SCHEME_GREEN);  } };
+struct BlueLight   : GrayModuleLightWidget { BlueLight()   { addBaseColor(SCHEME_BLUE);   } };
+struct WhiteLight  : GrayModuleLightWidget { WhiteLight()  { addBaseColor(SCHEME_WHITE);  } };
+
+struct GreenRedLight : GrayModuleLightWidget
+{
+	GreenRedLight() { addBaseColor(SCHEME_GREEN); addBaseColor(SCHEME_RED); }
+};
+
+struct RedGreenBlueLight : GrayModuleLightWidget
+{
+	RedGreenBlueLight() { addBaseColor(SCHEME_RED); addBaseColor(SCHEME_GREEN); addBaseColor(SCHEME_BLUE); }
+};
 
 // NOTE: YellowBlueLight, YellowRedLight, VCVBezelBig, VCVBezelLightBig,
 // DigitalDisplay, ChannelDisplay and createRangeItem are NOT defined here.
 // Fundamental declares them in its own src/plugin.hpp, which is module source
 // and is copied in alongside the modules. Defining them here would shadow the
 // real ones and quietly diverge.
+
+// Each of these takes the colours from its TLight argument by constructing one
+// and reading its base colours. Rack gets there by making the light an actual
+// child widget; the effect on what gets painted is the same.
+template<typename TLight>
+inline std::vector<NVGcolor> lightColorsOf()
+{
+	TLight probe;
+	return probe.baseColors;
+}
 
 // Size classes wrap a colour class. The "Simple" variants differ only in
 // having no halo in Rack, which is not modelled.
@@ -1957,7 +1999,16 @@ template<typename TBase> struct LargeSimpleLight  : LargeLight<TBase> {};
 
 // Controls that are a parameter AND a light in one — a lit button, bezel or
 // slider. They carry both ids.
-struct LightParamWidget : ParamWidget { int firstLightId{}; };
+struct LightParamWidget : ParamWidget
+{
+	int firstLightId{ -1 };
+
+	// Rack builds a child light widget inside the button; this records the
+	// colours that widget would have had, so the editor can paint the lit part
+	// without a widget tree. Filled by the lit-control templates below from
+	// their TLight argument.
+	std::vector<NVGcolor> lightColors;
+};
 
 struct VCVButton   : ParamWidget { VCVButton()   { box.size = mm2px(Vec(9.0f, 9.0f)); } };
 
@@ -1976,19 +2027,23 @@ struct VCVSlider   : SliderKnob  {};
 struct LightButtonBase : ParamWidget { LightButtonBase() { box.size = mm2px(Vec(9.0f, 9.0f)); } };
 
 template<typename TBase = LightButtonBase, typename TLight = WhiteLight>
-struct LightButton : TBase { int firstLightId{}; };
+struct LightButton : TBase
+{
+	int firstLightId{ -1 };
+	std::vector<NVGcolor> lightColors{ lightColorsOf<TLight>() };
+};
 
 template<typename TLight = WhiteLight>
-struct VCVLightButton : LightParamWidget { VCVLightButton() { box.size = mm2px(Vec(9.0f, 9.0f)); } };
+struct VCVLightButton : LightParamWidget { VCVLightButton() { box.size = mm2px(Vec(9.0f, 9.0f)); lightColors = lightColorsOf<TLight>(); } };
 
 template<typename TLight = WhiteLight>
-struct VCVLightLatch : LightParamWidget { VCVLightLatch() { box.size = mm2px(Vec(9.0f, 9.0f)); } };
+struct VCVLightLatch : LightParamWidget { VCVLightLatch() { box.size = mm2px(Vec(9.0f, 9.0f)); lightColors = lightColorsOf<TLight>(); } };
 
 template<typename TLight = WhiteLight>
-struct VCVLightBezel : LightParamWidget { VCVLightBezel() { box.size = mm2px(Vec(9.0f, 9.0f)); } };
+struct VCVLightBezel : LightParamWidget { VCVLightBezel() { box.size = mm2px(Vec(9.0f, 9.0f)); lightColors = lightColorsOf<TLight>(); } };
 
 template<typename TLight = WhiteLight>
-struct VCVLightSlider : LightParamWidget { VCVLightSlider() { box.size = mm2px(Vec(5.0f, 30.0f)); } };
+struct VCVLightSlider : LightParamWidget { VCVLightSlider() { box.size = mm2px(Vec(5.0f, 30.0f)); lightColors = lightColorsOf<TLight>(); } };
 
 struct ThemedScrew      : Widget {};
 struct RoundBlackKnob   : ParamWidget { RoundBlackKnob()   { box.size = mm2px(Vec(9.5f, 9.5f)); } };
@@ -2001,7 +2056,7 @@ struct RoundHugeBlackKnob : ParamWidget { RoundHugeBlackKnob() { box.size = mm2p
 struct ScrewSilver        : Widget      { ScrewSilver()        { box.size = mm2px(Vec(3.0f,  3.0f));  } };
 
 template<typename TLight = WhiteLight>
-struct LEDLightBezel : LightParamWidget { LEDLightBezel() { box.size = mm2px(Vec(9.0f, 9.0f)); } };
+struct LEDLightBezel : LightParamWidget { LEDLightBezel() { box.size = mm2px(Vec(9.0f, 9.0f)); lightColors = lightColorsOf<TLight>(); } };
 struct CKSSThree        : ParamWidget { CKSSThree()        { box.size = mm2px(Vec(3.5f, 9.5f)); } };
 
 // 23.7px is the literal size of Rack's res/ComponentLibrary/PJ301M.svg, so

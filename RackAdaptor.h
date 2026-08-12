@@ -81,6 +81,20 @@ struct RegistrationOptions
 	const char* extraXml = nullptr;
 };
 
+// How many of a module's menu entries carry a parameter. Separators do not,
+// so this is not menu.size(), and getting it wrong shifts every light
+// parameter onto a menu option.
+inline std::size_t menuOptionCount(const std::vector<MenuOption>& menu)
+{
+	std::size_t count = 0;
+	for (const auto& m : menu)
+	{
+		if (m.paramIndex >= 0)
+			++count;
+	}
+	return count;
+}
+
 namespace detail
 {
 	inline void appendEscaped(std::string& out, const std::string& s)
@@ -223,6 +237,24 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 		x += "\"/>\n";
 	}
 
+	// Lights. Each one becomes a private, non-persistent parameter written by
+	// the DSP and read by the editor — the same shape SynthEdit's own scope and
+	// meters use to get data from the audio thread to the GUI. They are not
+	// user parameters: `private` keeps them out of the host's automation list,
+	// `ignorePatchChange` and `persistant="false"` keep a blinking LED from
+	// marking the patch dirty or being saved into it.
+	//
+	// Only the lights the panel actually SHOWS get one. A module that declares
+	// lights and never places a widget for them costs nothing.
+	const std::size_t lightParamBase = probe->params.size() + menuOptionCount(menuOptions);
+
+	for (std::size_t i = 0; i < layout.displayedLightIds.size(); ++i)
+	{
+		x += "    <Parameter id=\"" + std::to_string(lightParamBase + i) + "\" name=\"Light ";
+		x += std::to_string(layout.displayedLightIds[i]);
+		x += "\" datatype=\"float\" private=\"true\" ignorePatchChange=\"true\" persistant=\"false\"/>\n";
+	}
+
 	x += "  </Parameters>\n";
 
 	// The editor registers separately (withId / registerEditor), but its pins
@@ -245,6 +277,11 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 		x += "    <Pin name=\"";
 		detail::appendEscaped(x, m.name);
 		x += "\" private=\"true\" parameterId=\"" + std::to_string(probe->params.size() + m.paramIndex) + "\" />\n";
+	}
+	for (std::size_t i = 0; i < layout.displayedLightIds.size(); ++i)
+	{
+		x += "    <Pin name=\"Light " + std::to_string(layout.displayedLightIds[i]);
+		x += "\" datatype=\"float\" private=\"true\" parameterId=\"" + std::to_string(lightParamBase + i) + "\" />\n";
 	}
 	x += "  </GUI>\n";
 
@@ -296,6 +333,14 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 	{
 		if (m.paramIndex >= 0)
 			x += "    <Pin parameterId=\"" + std::to_string(probe->params.size() + m.paramIndex) + "\" />\n";
+	}
+	// direction="out": the DSP writes these, the GUI reads them. Everything
+	// else in this section is an input.
+	for (std::size_t i = 0; i < layout.displayedLightIds.size(); ++i)
+	{
+		x += "    <Pin name=\"Light " + std::to_string(layout.displayedLightIds[i]);
+		x += "\" direction=\"out\" datatype=\"float\" private=\"true\" parameterId=\"";
+		x += std::to_string(lightParamBase + i) + "\" />\n";
 	}
 	x += "  </Audio>\n";
 
@@ -357,6 +402,13 @@ public:
 			default: break;   // separators have no pin
 			}
 		}
+
+		// Light outputs, last in the <Audio> section and therefore last here.
+		// These are the one thing the DSP SENDS rather than receives: the
+		// module computes an LED's brightness in process() and the editor has
+		// no way to know it otherwise, owning a different module instance.
+		for (std::size_t i = 0; i < layout.displayedLightIds.size(); ++i)
+			lightPins.emplace_back();
 
 		// Every port has a GMPI pin and every pin has a buffer, so from the
 		// module's point of view everything is patched. Modules commonly
@@ -431,6 +483,31 @@ public:
 			for (size_t p = 0; p < audioOuts.size(); ++p)
 				getBuffer(audioOuts[p])[i] = module->outputs[p].getVoltage() / voltsPerUnit;
 		}
+
+		sendLights();
+	}
+
+	// Push each displayed light's brightness to the editor.
+	//
+	// Once per block, not per sample: a light is a GUI value, and modules
+	// already rate-limit their own updates with a ClockDivider. The pin's
+	// operator= only sends when the value actually changes, so a steady LED
+	// costs one comparison per block and no traffic at all.
+	//
+	// Quantised to 1/256 for the same reason: a VU-style light computed with a
+	// smoothing filter never settles exactly, and without this every block
+	// would send a new value forever.
+	void sendLights()
+	{
+		for (std::size_t i = 0; i < lightPins.size(); ++i)
+		{
+			const int id = layout.displayedLightIds[i];
+			if (id < 0 || (std::size_t)id >= module->lights.size())
+				continue;
+
+			const float b = std::clamp(module->lights[id].getBrightness(), 0.0f, 1.0f);
+			lightPins[i] = std::round(b * 256.0f) / 256.0f;
+		}
 	}
 
 private:
@@ -440,6 +517,7 @@ private:
 	std::deque<gmpi::FloatInPin>  paramPins;
 	std::deque<gmpi::IntInPin>    menuIntPins;
 	std::deque<gmpi::BoolInPin>   menuBoolPins;
+	std::deque<gmpi::FloatOutPin> lightPins;   // DSP -> editor, one per displayed light
 	PanelLayout                   layout;      // menu targets bound to `module`
 	rack::Module::ProcessArgs     args{};
 };

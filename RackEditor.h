@@ -106,6 +106,26 @@ public:
 		for (auto& pin : paramPins)    pin.onUpdate = redraw;
 		for (auto& pin : menuIntPins)  pin.onUpdate = redraw;
 		for (auto& pin : menuBoolPins) pin.onUpdate = redraw;
+
+		// Lights last, matching the <GUI> pin list. These are driven by the
+		// PROCESSOR, not by anything here — see RackProcessor::sendLights.
+		// Their redraw is narrowed to the light's own rectangle: a blinking
+		// LED that invalidated the whole panel would repaint the SVG, the
+		// jacks and every knob several times a second.
+		for (std::size_t i = 0; i < layout.displayedLightIds.size(); ++i)
+			lightPins.emplace_back();
+
+		for (std::size_t i = 0; i < lightPins.size(); ++i)
+		{
+			lightPins[i].onUpdate = [this, i](gmpi::editor::PinBase*)
+			{
+				if (drawingHost)
+				{
+					const auto r = lightBounds((int)i);
+					drawingHost->invalidateRect(&r);
+				}
+			};
+		}
 	}
 
 	// A FIXED-SIZE editor: the same answer whatever is offered, availableSize
@@ -150,6 +170,7 @@ public:
 
 		drawJacks(g);
 		drawKnobIndicators(g);
+		drawLights(g);
 
 		return gmpi::ReturnCode::Ok;
 	}
@@ -375,6 +396,144 @@ private:
 		for (const auto& c : layout.outputs) drawJack(c);
 	}
 
+	// The LEDs.
+	//
+	// Rack's own light rendering, in the parts that show: an unlit lens is
+	// always drawn (a half-grey disc at a third opacity, faintly outlined),
+	// the lit colour is painted over it at an alpha equal to the brightness,
+	// and a halo spreads to four times the radius.
+	//
+	// A bi-colour LED holds two light ids and two base colours. Rack combines
+	// them with a screen blend and takes the strongest brightness as the alpha,
+	// which is what makes Compare's yellow/blue indicator read as one lamp
+	// changing colour rather than two lamps fighting.
+	//
+	// COLOUR SPACE, and this is deliberate rather than overlooked: Rack's
+	// SCHEME_* constants are sRGB-encoded, and gmpi_ui's Color components are
+	// linear. The components are passed straight through, so an LED renders a
+	// little brighter and less saturated than the same one in Rack —
+	// SCHEME_YELLOW's 0.797 green lands at 231/255 rather than 203/255.
+	// Blending stays correct, which is the property worth keeping; matching
+	// Rack exactly would mean adopting its sRGB blending, which is not.
+	void drawLights(gmpi::drawing::Graphics& g)
+	{
+		using namespace gmpi::drawing;
+
+		if (layout.lights.empty())
+			return;
+
+		for (const auto& l : layout.lights)
+		{
+			const float r = l.radius();
+			if (r <= 0.0f)
+				continue;
+
+			const Point centre{ l.x, l.y };
+			const Ellipse lens{ centre, r, r };
+
+			// The unlit lens, always.
+			auto bg = g.createSolidColorBrush(Color{ 0.5f, 0.5f, 0.5f, 0.33f });
+			g.fillEllipse(lens, bg);
+
+			auto border = g.createSolidColorBrush(Color{ 0.0f, 0.0f, 0.0f, 0.15f });
+			g.drawEllipse(lens, border, (std::max)(0.5f, r * 0.1f));
+
+			const Color lit = mixLight(l);
+            if (lit.a <= 0.0f)
+                continue;
+
+			// The halo: constant out to the lens edge, fading to nothing at
+			// four radii. Drawn BEFORE the lit lens so the lens stays crisp.
+			const float outer = r * 4.0f;
+			const Color haloColor{ lit.r, lit.g, lit.b, lit.a * 0.25f };
+			const Color clear{ lit.r, lit.g, lit.b, 0.0f };
+
+			const Gradientstop stops[]
+			{
+				{ 0.00f, haloColor },
+				{ 0.25f, haloColor },
+				{ 1.00f, clear },
+			};
+
+			auto halo = g.createRadialGradientBrush(stops, centre, outer);
+			g.fillEllipse(Ellipse{ centre, outer, outer }, halo);
+
+			auto core = g.createSolidColorBrush(lit);
+			g.fillEllipse(lens, core);
+		}
+	}
+
+	// Rack's MultiLightWidget::setBrightnesses, which screens each base colour
+	// scaled by its own light's brightness. The alpha is the strongest of them,
+	// so a light that is off everywhere disappears entirely rather than tinting
+	// the lens.
+	gmpi::drawing::Color mixLight(const LightLayout& l) const
+	{
+		gmpi::drawing::Color mixed{ 0.0f, 0.0f, 0.0f, 0.0f };
+
+		for (std::size_t i = 0; i < l.colors.size(); ++i)
+		{
+			const float b = brightness(l.firstLightId + (int)i);
+			if (b <= 0.0f)
+				continue;
+
+			const auto& c = l.colors[i];
+
+			if (mixed.a <= 0.0f)
+			{
+				mixed = { c.r, c.g, c.b, b };
+				continue;
+			}
+
+			mixed.r = 1.0f - (1.0f - mixed.r) * (1.0f - c.r);
+			mixed.g = 1.0f - (1.0f - mixed.g) * (1.0f - c.g);
+			mixed.b = 1.0f - (1.0f - mixed.b) * (1.0f - c.b);
+			mixed.a = (std::max)(mixed.a, b);
+		}
+
+		return mixed;
+	}
+
+	float brightness(int lightId) const
+	{
+		const int slot = layout.lightSlot(lightId);
+		if (slot < 0 || (std::size_t)slot >= lightPins.size())
+			return 0.0f;
+
+		return std::clamp(lightPins[slot].value, 0.0f, 1.0f);
+	}
+
+	// The area a light can affect, halo included — what its pin invalidates.
+	gmpi::drawing::Rect lightBounds(int pinSlot) const
+	{
+		gmpi::drawing::Rect r{ 0.0f, 0.0f, 0.0f, 0.0f };
+
+		if (pinSlot < 0 || (std::size_t)pinSlot >= layout.displayedLightIds.size())
+			return r;
+
+		const int lightId = layout.displayedLightIds[pinSlot];
+		bool found = false;
+
+		// One light id can appear in more than one widget; union them.
+		for (const auto& l : layout.lights)
+		{
+			if (lightId < l.firstLightId || lightId >= l.firstLightId + (int)l.colors.size())
+				continue;
+
+			const float reach = l.radius() * 4.0f;
+			const gmpi::drawing::Rect b{ l.x - reach, l.y - reach, l.x + reach, l.y + reach };
+
+			r = found ? gmpi::drawing::Rect{ (std::min)(r.left,   b.left),
+			                                 (std::min)(r.top,    b.top),
+			                                 (std::max)(r.right,  b.right),
+			                                 (std::max)(r.bottom, b.bottom) }
+			          : b;
+			found = true;
+		}
+
+		return r;
+	}
+
 	// Only the moving part — the panel art already has the knob caps.
 	void drawKnobIndicators(gmpi::drawing::Graphics& g)
 	{
@@ -435,6 +594,7 @@ private:
 	std::deque<gmpi::editor::Pin<float>>   paramPins;
 	std::deque<gmpi::editor::Pin<int32_t>> menuIntPins;
 	std::deque<gmpi::editor::Pin<bool>>    menuBoolPins;
+	std::deque<gmpi::editor::Pin<float>>   lightPins;
 
 	int  dragging{ -1 };
 	gmpi::drawing::Point lastMouse{};

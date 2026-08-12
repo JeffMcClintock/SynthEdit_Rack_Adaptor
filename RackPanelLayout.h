@@ -121,12 +121,45 @@ struct MenuOption
 	int slot{ -1 };
 };
 
+// One LED on the panel.
+//
+// `firstLightId` indexes the module's own `lights` table, and `colors` has one
+// entry per consecutive light from there — which is how a bi-colour LED works
+// in Rack: two light ids, two base colours, screened together by brightness.
+// A single-colour LED is just the one-entry case.
+struct LightLayout
+{
+	int   firstLightId{ -1 };
+	float x{}, y{};            // centre
+	float width{}, height{};
+
+	std::vector<rack::NVGcolor> colors;
+
+	float radius() const { return 0.5f * (std::min)(width, height); }
+};
+
 struct PanelLayout
 {
 	std::vector<ControlLayout> params;
 	std::vector<ControlLayout> inputs;
 	std::vector<ControlLayout> outputs;
+	std::vector<LightLayout>   lights;
 	std::vector<MenuOption>    menu;
+
+	// The light ids the panel actually shows, sorted and deduplicated. A module
+	// may declare lights it never places — and every entry here costs a
+	// parameter and a pin in both directions, so only the displayed ones are
+	// carried. Index into this vector is the light's pin slot.
+	std::vector<int> displayedLightIds;
+
+	int lightSlot(int lightId) const
+	{
+		const auto it = std::lower_bound(displayedLightIds.begin(), displayedLightIds.end(), lightId);
+		if (it == displayedLightIds.end() || *it != lightId)
+			return -1;
+
+		return (int)(it - displayedLightIds.begin());
+	}
 
 	// Whatever the module passed to createPanel(), e.g. "res/Fade.svg".
 	// Resolve against rack::PanelRegistry to get the bytes.
@@ -134,7 +167,7 @@ struct PanelLayout
 
 	// Table sizes as the module declared them in config(), which is not the
 	// same as the vector sizes above — a module may leave a port unplaced.
-	std::size_t numParams{}, numInputs{}, numOutputs{};
+	std::size_t numParams{}, numInputs{}, numOutputs{}, numLights{};
 };
 
 // Record what appendContextMenu() declared, in order. Separators are kept so
@@ -204,6 +237,7 @@ inline PanelLayout readPanelLayout(rack::Model& model)
 	layout.numParams  = probe->params.size();
 	layout.numInputs  = probe->inputs.size();
 	layout.numOutputs = probe->outputs.size();
+	layout.numLights  = probe->lights.size();
 
 	std::unique_ptr<rack::ModuleWidget> widget(model.createModuleWidget(probe.get()));
 	if (!widget)
@@ -249,6 +283,50 @@ inline PanelLayout readPanelLayout(rack::Model& model)
 
 	collectPorts(widget->inputWidgets,  layout.numInputs,  probe->inputNames,  layout.inputs);
 	collectPorts(widget->outputWidgets, layout.numOutputs, probe->outputNames, layout.outputs);
+
+	// The LEDs.
+	//
+	// Unlike ports and params, lights are not kept in a list of their own —
+	// a module adds them with plain addChild(), so they are found by walking
+	// the widget's children. Lit buttons (LightParamWidget) carry a light too
+	// and arrive through addParam(), which also calls addChild(), so one walk
+	// covers both.
+	{
+		auto record = [&](int firstLightId, const rack::Rect& box, const std::vector<rack::NVGcolor>& colors)
+		{
+			if (firstLightId < 0 || colors.empty())
+				return;   // a light with no colour has nothing to paint
+
+			LightLayout l;
+			l.firstLightId = firstLightId;
+			l.x = box.pos.x;
+			l.y = box.pos.y;
+			l.width = box.size.x;
+			l.height = box.size.y;
+			l.colors = colors;
+			layout.lights.push_back(std::move(l));
+
+			for (std::size_t i = 0; i < colors.size(); ++i)
+			{
+				const int id = firstLightId + (int)i;
+				if (id < (int)layout.numLights)
+					layout.displayedLightIds.push_back(id);
+			}
+		};
+
+		for (auto* child : widget->children)
+		{
+			if (auto* lw = dynamic_cast<rack::LightWidget*>(child))
+				record(lw->firstLightId, lw->box, lw->baseColors);
+			else if (auto* lp = dynamic_cast<rack::LightParamWidget*>(child))
+				record(lp->firstLightId, lp->box, lp->lightColors);
+		}
+
+		std::sort(layout.displayedLightIds.begin(), layout.displayedLightIds.end());
+		layout.displayedLightIds.erase(
+			std::unique(layout.displayedLightIds.begin(), layout.displayedLightIds.end()),
+			layout.displayedLightIds.end());
+	}
 
 	// Context menu, e.g. Fade's "Pan law". Names, labels and current value only
 	// — `target` is deliberately left null, because it would point into

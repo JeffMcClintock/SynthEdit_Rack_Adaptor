@@ -97,9 +97,10 @@ A working GMPI plugin:
 - **Jacks**, drawn VCV-style and sized from the widget's declared size
 - **The context menu**, from `appendContextMenu()` — each index-pointer option
   becomes an `enum` parameter and a right-click submenu
+- **Lights**, drawn from the widget's own base colours and driven by the DSP
 
 Not yet supported: preset save/load beyond parameters (`dataToJson` is an inert
-stub), lights, custom widgets, and polyphony beyond mono.
+stub), custom widgets, and polyphony beyond mono.
 
 Custom widgets are the one to watch. A module that draws its own display —
 Scope's trace, VCA-1's VU meter, Quantizer's note grid — compiles and runs, but
@@ -154,6 +155,14 @@ define list on semicolons and mangles parentheses.
   idioms like `cv / 10.f` see real volts. Parameter pins are raw.
 - **`isConnected()`**: the adaptor drives every port, so a module never sees an
   unconnected input; one that normalises to a fallback will read 0V instead.
+- **Lights travel DSP -> GUI as parameters.** A light's brightness is computed
+  in `process()`, on the processor's module instance, and the editor owns a
+  different one. Each displayed light therefore gets a private, non-persistent
+  parameter written by a DSP out-pin and read by a GUI pin — the same shape
+  SynthEdit's own scope and meters use. `private` keeps them out of the host's
+  automation list; `ignorePatchChange` and `persistant="false"` stop a blinking
+  LED marking the patch dirty or being saved into it. Only lights the panel
+  actually shows get one.
 - **Context-menu options are per-instance.** The editor and the processor own
   separate module instances, so a module's `&module->panLaw` pointer is only
   valid for the one that produced it. Each side calls `appendContextMenu()` on
