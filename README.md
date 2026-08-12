@@ -4,18 +4,12 @@ Run [VCV Rack](https://vcvrack.com/) modules as SynthEdit / GMPI plugins, by
 compiling each module's **own source, unmodified**, against a mock of Rack's
 API. No DSP is rewritten.
 
-A ported module's entire source file is two lines:
+A ported module's extra source code is two lines:
 
 ```cpp
 #include "RackModule.h"
 #include "vcv/Fade.cpp"   // the module's own source, byte-for-byte
 ```
-
-The module's own registration line — `createModel<Fade, FadeWidget>("Fade")` —
-is what puts a GMPI plugin in the factory. Its `config()` declarations become
-the plugin XML; its `ModuleWidget` becomes the patch points and the editor's
-knob layout; and the panel it names in `createPanel()` resolves against the
-art your build staged.
 
 **This repository contains no VCV Rack code and no VCV artwork.** You supply
 the module sources you want to port.
@@ -29,10 +23,7 @@ anything you build with it.
 
 That is deliberate. VCV Rack modules are typically GPL-3.0-or-later, so a
 binary combining one with this adaptor is a combined work that must be
-distributed under GPL-3.0-or-later with corresponding source. Licensing the
-adaptor permissively would not have changed that obligation by one word — it
-would only have obscured where it lands. Matching the licence of the code this
-is designed to be combined with keeps the answer visible.
+distributed under GPL-3.0-or-later with corresponding source.
 
 If you distribute a plugin built with this, you must:
 
@@ -92,7 +83,7 @@ compatible with. No VCV branding is shipped in this repository.
 
 ## What it generates for you
 
-From the module's own declarations — you write none of this:
+A working GMPI plugin:
 
 - **Pins**, named as the module named its ports, ordered
   inputs → outputs → parameters
@@ -138,25 +129,8 @@ define list on semicolons and mangles parentheses.
 
 ## Contracts worth knowing
 
-- **Pin order**: inputs in the module's order, then outputs, then parameter
-  pins. `generatePluginXml()` and `RackProcessor`'s pin construction both
-  follow it; they must never diverge.
-- **Patch-point `pinId` is NOT that order.** It indexes SynthEdit's *document*
-  pin list, where a module's GUI pins are numbered ahead of its audio pins. So
-  with N parameters, audio pin *k* is document pin *N + k*. This bites
-  silently: adding an editor renumbers every jack.
-- **Include order**: GMPI and gmpi_ui headers come before `plugin.hpp`, which
-  ends with `using namespace rack;` as Rack's own does. Afterwards,
-  `rack::Rect` makes every `Rect` in `SvgParser.h` ambiguous. `RackModule.h`
-  handles this; it matters if you assemble the headers yourself.
-- **Static init**: anything written during static initialization and read
-  later must be a **function-local** static. An `inline static std::string`
-  has its own dynamic initialization, unordered against the write, so the
-  assignment lands first and the constructor then wipes it.
 - **Volts**: GMPI 1.0 = 10V. Audio pins scale ×10 in / ÷10 out so module
   idioms like `cv / 10.f` see real volts. Parameter pins are raw.
 - **`isConnected()`**: the adaptor drives every port, so a module never sees an
   unconnected input; one that normalises to a fallback will read 0V instead.
 
-First consumer:
-[VCV_Fundamental_gmpi](https://github.com/JeffMcClintock/VCV_Fundamental_gmpi).
