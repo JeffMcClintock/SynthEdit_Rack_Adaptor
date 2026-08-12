@@ -119,6 +119,7 @@ public:
 		if (drawn.width > 0.0f && drawn.height > 0.0f)
 			panelSize = drawn;
 
+		drawJacks(g);
 		drawKnobIndicators(g);
 
 		return gmpi::ReturnCode::Ok;
@@ -199,6 +200,62 @@ private:
 		}
 
 		return best;
+	}
+
+	// The jacks.
+	//
+	// A Rack panel SVG does NOT contain its jack artwork — Fundamental's put
+	// the positions in a display:none "components" layer and Rack composites
+	// the real graphic on top at runtime. SynthEdit draws nothing at a
+	// <PatchPoint> either (they are hit targets and cable anchors only), so
+	// without this the sockets are simply invisible.
+	//
+	// Proportions are taken from Rack's own res/ComponentLibrary/PJ301M.svg,
+	// which is 23.7px across (radius 11.85) and built from concentric circles.
+	// Expressed as a fraction of the outer radius so the jack scales with
+	// whatever size the widget declares:
+	//
+	//     0.937  rim            0.881  light collar
+	//     0.689  dark ring      0.574  light ring
+	//     0.411  hole
+	//
+	// The original interleaves thin radial-gradient rings between these flat
+	// fills; flat fills alone reproduce the look at this size, and the panel
+	// is 45px wide.
+	void drawJacks(gmpi::drawing::Graphics& g)
+	{
+		if (layout.inputs.empty() && layout.outputs.empty())
+			return;
+
+		using namespace gmpi::drawing;
+
+		auto rim   = g.createSolidColorBrush(colorFromHex(0x9A9A9A));
+		auto light = g.createSolidColorBrush(colorFromHex(0xE0E0E0));
+		auto dark  = g.createSolidColorBrush(colorFromHex(0x1F1F1F));
+
+		auto drawJack = [&](const ControlLayout& c)
+		{
+			const float r = c.radius();
+			if (r <= 0.0f)
+				return;
+
+			const Point centre{ c.x, c.y };
+
+			// Largest first; each ring paints over the one before.
+			auto ring = [&](float scale, IHasBrush& brush)
+			{
+				g.fillEllipse(Ellipse{ centre, r * scale, r * scale }, brush);
+			};
+
+			ring(0.937f, rim);
+			ring(0.881f, light);
+			ring(0.689f, dark);
+			ring(0.574f, light);
+			ring(0.411f, dark);
+		};
+
+		for (const auto& c : layout.inputs)  drawJack(c);
+		for (const auto& c : layout.outputs) drawJack(c);
 	}
 
 	// Only the moving part — the panel art already has the knob caps.

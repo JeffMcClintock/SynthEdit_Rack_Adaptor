@@ -339,7 +339,10 @@ struct PortWidget  : Widget { Module* module{}; int portId{}; };
 struct ThemedScrew      : Widget {};
 struct RoundBlackKnob   : ParamWidget { RoundBlackKnob()   { box.size = mm2px(Vec(9.5f, 9.5f)); } };
 struct Trimpot          : ParamWidget { Trimpot()          { box.size = mm2px(Vec(7.0f, 7.0f)); } };
-struct ThemedPJ301MPort : PortWidget  { ThemedPJ301MPort() { box.size = mm2px(Vec(8.7f, 8.7f)); } };
+
+// 23.7px is the literal size of Rack's res/ComponentLibrary/PJ301M.svg, so
+// the jack the editor draws is the size the real artwork would have been.
+struct ThemedPJ301MPort : PortWidget  { ThemedPJ301MPort() { box.size = Vec(23.7f, 23.7f); } };
 
 // NOTE ON box.pos: for widgets made by the *Centered helpers below, the mock
 // leaves box.pos holding the CENTRE. Rack converts it to a top-left; we do
