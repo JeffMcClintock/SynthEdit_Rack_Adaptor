@@ -148,11 +148,17 @@ only for a module that declares state. See `RackDisplayState.h`.
 - **`RackEditor.h`** — `RackEditor`, the generic GUI: draws the panel, works
   the knobs.
 - **`RackAutoRegister.h`** - the hook that makes a module register itself. It
-  registers LAZILY, via GMPI's `RegisterPluginLazyXml`: a module's
+  registers LAZILY, through the adaptor's own factory: a module's
   `createModel()` line runs before anything the port declares after including
   it, so XML generated at that moment could never see a `RACK_DISPLAY_STATE`
   declaration. The factory asks for the XML during the host's plugin scan
   instead, when every static initializer in the DLL has run.
+- **`RackFactory.h/.cpp`** - that factory. GMPI's own builds a plugin's XML at
+  registration time, which is right for a plugin whose XML is a string literal
+  and wrong for one that generates it. Rather than push a niche case into the
+  SDK, the adaptor supplies its own and sets `GMPI_DISABLE_FACTORY` so GMPI's
+  is compiled out - the same arrangement the VST3 wrapper uses. It is the one
+  file here that is compiled rather than included.
 - **`RackModule.h`** — the single header a ported module includes.
 
 ## Configuration

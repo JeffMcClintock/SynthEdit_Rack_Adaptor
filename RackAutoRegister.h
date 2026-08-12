@@ -30,6 +30,7 @@
 #include <string>
 
 #include "RackAdaptor.h"
+#include "RackFactory.h"
 
 #ifndef RACK_ADAPTOR_NO_GUI
 	#include "RackEditor.h"
@@ -99,7 +100,7 @@ void autoRegisterModel(rack::Model& model)
 	//
 	// Deferring costs nothing. The factory asks for the XML when the host scans
 	// the plugin, by which time every static initializer in the DLL has run.
-	gmpi::RegisterPluginLazyXml(
+	registerPluginLazyXml(
 		gmpi::api::PluginSubtype::Audio,
 		id.c_str(),
 		[]() -> std::string
