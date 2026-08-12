@@ -89,22 +89,39 @@ void autoRegisterModel(rack::Model& model)
 	slug = model.slug;
 	id   = std::string(RACK_MODULE_ID_PREFIX) + model.slug;
 
-	// Plain assignment rather than designated initializers: the values are
-	// macros, and a macro that arrives without its quotes (a real risk when
-	// CMake passes a string containing a space) produces a baffling syntax
-	// error inside a braced initializer. This way it fails on the assignment,
-	// naming the macro.
-	RegistrationOptions opt;
-	opt.id       = id.c_str();
-	opt.name     = slug.c_str();
-	opt.category = RACK_MODULE_CATEGORY;
-	opt.vendor   = RACK_MODULE_VENDOR;
-
-	const auto xml = generatePluginXml(model, opt);
-
-	gmpi::RegisterPluginWithXml(
+	// THE XML IS NOT BUILT HERE, and that is the point of the lazy form.
+	//
+	// This function runs from the module's own createModel() line, which sits
+	// at the BOTTOM of upstream's .cpp — and therefore before anything the port
+	// declares after including it. RACK_DISPLAY_STATE is exactly that: a module
+	// that declares display state has not declared it yet at this moment, so
+	// generating the XML now would always conclude it has none.
+	//
+	// Deferring costs nothing. The factory asks for the XML when the host scans
+	// the plugin, by which time every static initializer in the DLL has run.
+	gmpi::RegisterPluginLazyXml(
 		gmpi::api::PluginSubtype::Audio,
-		xml.c_str(),                       // the factory copies it
+		id.c_str(),
+		[]() -> std::string
+		{
+			auto* m = rack::ModelRegistry::instance().find(
+				moduleSlug<TModule, TModuleWidget>().c_str());
+			if (!m)
+				return {};
+
+			// Plain assignment rather than designated initializers: the values
+			// are macros, and one that arrives without its quotes (a real risk
+			// when CMake passes a string containing a space) gives a baffling
+			// syntax error inside a braced initializer. This way it fails on
+			// the assignment, naming the macro.
+			RegistrationOptions options;
+			options.id       = modulePluginId<TModule, TModuleWidget>().c_str();
+			options.name     = moduleSlug<TModule, TModuleWidget>().c_str();
+			options.category = RACK_MODULE_CATEGORY;
+			options.vendor   = RACK_MODULE_VENDOR;
+
+			return generatePluginXml(*m, options);
+		},
 		[]() -> gmpi::api::IUnknown*
 		{
 			return createProcessor(moduleSlug<TModule, TModuleWidget>().c_str());

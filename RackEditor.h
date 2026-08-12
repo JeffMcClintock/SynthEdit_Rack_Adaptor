@@ -178,12 +178,14 @@ public:
 		// constructed last. It redraws the whole panel, unlike a light: the
 		// module's own draw() decides what the new state affects and we
 		// cannot know which part of the panel that is.
-		// Constructed whether or not this module sends anything, because the
-		// pin is in the <GUI> list either way and pins are numbered by
-		// construction order. Nothing arrives on it unless the port declared
-		// state with RACK_DISPLAY_STATE.
-		displayStatePin.emplace();
-		displayStatePin->onUpdate = redraw;
+		// Only when the module declared state with RACK_DISPLAY_STATE — the XML
+		// only carries the pin in that case, and pins are numbered by
+		// construction order.
+		if (displayState)
+		{
+			displayStatePin.emplace();
+			displayStatePin->onUpdate = redraw;
+		}
 	}
 
 	// A FIXED-SIZE editor: the same answer whatever is offered, availableSize

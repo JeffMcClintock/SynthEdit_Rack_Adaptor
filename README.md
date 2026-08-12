@@ -122,8 +122,8 @@ RACK_DISPLAY_STATE(&Scope::pointBuffer, &Scope::channelsX,
 ```
 
 The module type is deduced, every member is checked trivially copyable, and the
-bytes travel on a private blob parameter at display rate. See
-`RackDisplayState.h`.
+bytes travel on a private blob parameter at display rate. The pin is generated
+only for a module that declares state. See `RackDisplayState.h`.
 
 ## Pieces
 
@@ -147,7 +147,12 @@ bytes travel on a private blob parameter at display rate. See
   DSP bridge.
 - **`RackEditor.h`** — `RackEditor`, the generic GUI: draws the panel, works
   the knobs.
-- **`RackAutoRegister.h`** — the hook that makes a module register itself.
+- **`RackAutoRegister.h`** - the hook that makes a module register itself. It
+  registers LAZILY, via GMPI's `RegisterPluginLazyXml`: a module's
+  `createModel()` line runs before anything the port declares after including
+  it, so XML generated at that moment could never see a `RACK_DISPLAY_STATE`
+  declaration. The factory asks for the XML during the host's plugin scan
+  instead, when every static initializer in the DLL has run.
 - **`RackModule.h`** — the single header a ported module includes.
 
 ## Configuration

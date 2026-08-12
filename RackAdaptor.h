@@ -260,22 +260,23 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 	// The display-state blob: the channel a custom display's DSP state travels
 	// on. Same shape as a light — private, not persisted — carrying bytes.
 	//
-	// EMITTED UNCONDITIONALLY, even for the majority of modules that will never
-	// send anything on it, and that is deliberate. Whether a module HAS display
-	// state is only known once RACK_DISPLAY_STATE has run, and that sits after
-	// the #include of upstream's source — while this function runs from
-	// createModel(), which is at the BOTTOM of that same file and therefore
-	// EARLIER. Asking here would always answer "no".
+	// Only for a module that declared some with RACK_DISPLAY_STATE.
 	//
-	// The alternative was a second macro before the include to declare intent,
-	// which is an ordering rule for the next porter to get wrong. One unused
-	// private parameter is the cheaper mistake: the processor never writes it,
-	// the editor never reads it, and nothing shows it to a user.
+	// That answer is trustworthy because this function is not called until the
+	// host asks the factory for the XML, which is after every static
+	// initializer in the DLL has run. Called during static init, as it once
+	// was, it would always have answered "no": a module's createModel() line
+	// runs before the declaration that follows it in the port's own file.
+	// See RackAutoRegister.h.
+	const auto* displayState = findDisplayState(*probe);
 	const std::size_t displayStateParamId = lightParamBase + layout.displayedLightIds.size();
 
-	x += "    <Parameter id=\"" + std::to_string(displayStateParamId);
-	x += "\" name=\"Display State\" datatype=\"blob\" private=\"true\"";
-	x += " ignorePatchChange=\"true\" persistant=\"false\"/>\n";
+	if (displayState)
+	{
+		x += "    <Parameter id=\"" + std::to_string(displayStateParamId);
+		x += "\" name=\"Display State\" datatype=\"blob\" private=\"true\"";
+		x += " ignorePatchChange=\"true\" persistant=\"false\"/>\n";
+	}
 
 	x += "  </Parameters>\n";
 
@@ -305,8 +306,11 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 		x += "    <Pin name=\"Light " + std::to_string(layout.displayedLightIds[i]);
 		x += "\" datatype=\"float\" private=\"true\" parameterId=\"" + std::to_string(lightParamBase + i) + "\" />\n";
 	}
-	x += "    <Pin name=\"Display State\" datatype=\"blob\" private=\"true\" parameterId=\"";
-	x += std::to_string(displayStateParamId) + "\" />\n";
+	if (displayState)
+	{
+		x += "    <Pin name=\"Display State\" datatype=\"blob\" private=\"true\" parameterId=\"";
+		x += std::to_string(displayStateParamId) + "\" />\n";
+	}
 	x += "  </GUI>\n";
 
 	// Audio pins — inputs, then outputs, then one pin per parameter. This
@@ -366,8 +370,11 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 		x += "\" direction=\"out\" datatype=\"float\" private=\"true\" parameterId=\"";
 		x += std::to_string(lightParamBase + i) + "\" />\n";
 	}
-	x += "    <Pin name=\"Display State\" direction=\"out\" datatype=\"blob\" private=\"true\" parameterId=\"";
-	x += std::to_string(displayStateParamId) + "\" />\n";
+	if (displayState)
+	{
+		x += "    <Pin name=\"Display State\" direction=\"out\" datatype=\"blob\" private=\"true\" parameterId=\"";
+		x += std::to_string(displayStateParamId) + "\" />\n";
+	}
 	x += "  </Audio>\n";
 
 	// Jack positions, from the module's own widget. Indexed against the <Audio>
@@ -441,13 +448,13 @@ public:
 		for (std::size_t i = 0; i < layout.displayedLightIds.size(); ++i)
 			lightPins.emplace_back();
 
-		// Constructed whether or not this module has state to send, because the
-		// pin is in the <Audio> list either way and pins are numbered by
-		// construction order.
-		displayStatePin.emplace();
-
+		// Only when the module declared state: the XML carries the pin only in
+		// that case, and pins are numbered by construction order.
 		if (displayState)
+		{
+			displayStatePin.emplace();
 			displayStateBytes.resize(displayState->size);
+		}
 
 		// Every port has a GMPI pin and every pin has a buffer, so from the
 		// module's point of view everything is patched. Modules commonly
