@@ -118,7 +118,7 @@ Everything below is what Unity actually needed, and it is now in the mock:
 | `dsp::VuMeter2` | real — peak detector with exponential decay |
 | `string::f("Channel %d #%d", ...)` | printf helper |
 | `lights[n].setBrightness(v)` | added to `Light` |
-| `createLight<MediumLight<RedLight>>(...)` | light widgets, size classes wrapping colour classes |
+| `createLight<MediumLight<RedLight>>(...)` | light widgets, size classes wrapping colour classes — and they draw, see below |
 | `createParam<CKSS>(...)`, `createInput<...>` | the **non-centred** `create*` forms |
 | `json_boolean` / `json_boolean_value` | inert, like the rest of the json stubs |
 | `void onReset() override` | the no-argument form; the base now forwards to it |
@@ -176,11 +176,59 @@ gain and a genuine mix look identical with one input.
 
 ## What you cannot fix in the mock
 
-Some things are not gaps but design limits, listed in the README: no lights
-rendering, no custom widgets, mono only, and `dataToJson`/`dataFromJson` are
-inert (module state that is not a parameter does not persist). If a module
-leans on those, it will compile and run but behave incompletely — which is
-worth knowing before you spend an afternoon on why an LED never lights.
+Some things are not gaps but design limits, listed in the README: no custom
+widgets, mono only, and `dataToJson`/`dataFromJson` are inert (module state
+that is not a parameter does not persist). If a module leans on those, it will
+compile and run but behave incompletely — which is worth knowing before you
+spend an afternoon on why a display stays blank.
+
+---
+
+## Lights, and why they are not just another widget
+
+You get them for free — nothing in a port has to mention them — but the shape
+is worth understanding, because anything else the DSP wants to show the GUI
+has to follow it.
+
+The editor and the processor own **separate module instances**. A light's
+brightness is computed in `process()`, which only ever runs on the processor's
+copy, so the editor cannot simply read `module->lights[i]`: its own copy is
+sitting there untouched. Only parameter values cross between the two.
+
+So each displayed light becomes a private, non-persistent parameter, written
+by a DSP out-pin and read by a GUI pin:
+
+```xml
+<Parameter id="3" datatype="float" name="Light 2"
+           private="true" ignorePatchChange="true" persistant="false"/>
+<Audio> <Pin name="Light 2" direction="out" datatype="float" private="true" parameterId="3"/> </Audio>
+<GUI>   <Pin name="Light 2"                  datatype="float" private="true" parameterId="3"/> </GUI>
+```
+
+`private` keeps it out of the host's automation list; `ignorePatchChange` and
+`persistant="false"` stop a blinking LED marking the patch dirty or being
+saved into it. It is the same shape SynthEdit's own scope and meters use — see
+`modules/Controls/Scope4Gui.cpp` in SynthEditLib.
+
+Three things that are easy to get wrong:
+
+- **An output pin needs an explicit block position inside `subProcess()`.**
+  The default is only legal when the processor sits exactly on an event
+  boundary, which is true in `onSetPins()` and false throughout `subProcess()`.
+  Debug builds assert the moment audio starts. `getBlockPosition()` is the
+  offset of the chunk you were handed, not of where you are inside it.
+- **Send once per chunk and quantise.** A light is a GUI value at 60Hz, not an
+  audio signal. A brightness computed with a smoothing filter never settles
+  exactly, so without quantising it resends forever.
+- **Invalidate the light, not the panel.** A blinking LED that dirties the
+  whole surface repaints the SVG, every jack and every knob several times a
+  second.
+
+The colours need no table anywhere: a Rack light widget already states them —
+`RedLight` adds `SCHEME_RED`, Fundamental's `YellowBlueLight` adds yellow then
+blue — one base colour per consecutive light id from `firstLightId`. That is
+the complete description of a bi-colour LED, so the mock's light classes carry
+their colours the way Rack's do and the editor reads them straight off.
 
 ---
 
