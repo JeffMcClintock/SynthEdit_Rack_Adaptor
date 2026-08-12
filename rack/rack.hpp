@@ -1429,7 +1429,6 @@ struct Module
 // modules affected.
 // ---------------------------------------------------------------------------
 struct NVGcolor { float r{}, g{}, b{}, a{ 1.f }; };
-struct NVGcontext;
 struct NVGpaint {};
 
 inline NVGcolor nvgRGB(int r, int g, int b)
@@ -1444,40 +1443,107 @@ inline NVGcolor nvgRGBf(float r, float g, float b)           { return { r, g, b,
 inline NVGcolor nvgTransRGBA(NVGcolor c, int a) { c.a = a / 255.f; return c; }
 inline NVGcolor nvgLerpRGBA(NVGcolor a, NVGcolor, float)     { return a; }
 
-inline void nvgBeginPath(NVGcontext*) {}
-inline void nvgClosePath(NVGcontext*) {}
-inline void nvgMoveTo(NVGcontext*, float, float) {}
-inline void nvgLineTo(NVGcontext*, float, float) {}
-inline void nvgBezierTo(NVGcontext*, float, float, float, float, float, float) {}
-inline void nvgRect(NVGcontext*, float, float, float, float) {}
-inline void nvgRoundedRect(NVGcontext*, float, float, float, float, float) {}
-inline void nvgCircle(NVGcontext*, float, float, float) {}
-inline void nvgEllipse(NVGcontext*, float, float, float, float) {}
-inline void nvgFill(NVGcontext*) {}
-inline void nvgStroke(NVGcontext*) {}
-inline void nvgFillColor(NVGcontext*, NVGcolor) {}
-inline void nvgFillPaint(NVGcontext*, NVGpaint) {}
-inline void nvgStrokeColor(NVGcontext*, NVGcolor) {}
-inline void nvgStrokeWidth(NVGcontext*, float) {}
+// The drawing backend a module's own draw() code runs on.
+//
+// A module that draws part of its panel — Scope's trace, VCA-1's VU meter,
+// ADSR's envelope curve — writes nanovg calls. This is the interface those
+// calls land on, and RackEditor.h implements it over gmpi_ui.
+//
+// WHY AN ABSTRACT INTERFACE rather than gmpi_ui directly: rack.hpp must not
+// know about gmpi_ui. A DSP-only build (RACK_ADAPTOR_NO_GUI) compiles this
+// header, and compiles the module's widget code along with it, without gmpi_ui
+// on the include path at all. With no backend attached every call below is a
+// no-op — which is exactly right for a build with no GUI.
+//
+// It is also what keeps the mock honest: nothing here pretends to draw.
+struct NanoVgBackend
+{
+	virtual ~NanoVgBackend() = default;
+
+	// Paths are accumulated, then painted by fill() or stroke().
+	virtual void beginPath() {}
+	virtual void closePath() {}
+	virtual void moveTo(float, float) {}
+	virtual void lineTo(float, float) {}
+	virtual void bezierTo(float, float, float, float, float, float) {}
+	virtual void rect(float, float, float, float) {}
+	virtual void roundedRect(float, float, float, float, float) {}
+	virtual void circle(float, float, float) {}
+	virtual void ellipse(float, float, float, float) {}
+	virtual void fill() {}
+	virtual void stroke() {}
+
+	virtual void fillColor(NVGcolor) {}
+	virtual void strokeColor(NVGcolor) {}
+	virtual void strokeWidth(float) {}
+	virtual void globalAlpha(float) {}
+
+	virtual void save() {}
+	virtual void restore() {}
+	virtual void scissor(float, float, float, float) {}
+	virtual void resetScissor() {}
+	virtual void translate(float, float) {}
+	virtual void scale(float, float) {}
+	virtual void rotate(float) {}
+
+	virtual void fontSize(float) {}
+	virtual void textAlign(int) {}
+	virtual void textLetterSpacing(float) {}
+	virtual float text(float, float, const char*, const char*) { return 0.f; }
+};
+
+// What a module's draw() calls receive as `args.vg`. Null backend = no-op.
+struct NVGcontext { NanoVgBackend* backend{}; };
+
+#define RACK_NVG_FORWARD(call) do { if (vg && vg->backend) vg->backend->call; } while (false)
+
+inline void nvgBeginPath(NVGcontext* vg) { RACK_NVG_FORWARD(beginPath()); }
+inline void nvgClosePath(NVGcontext* vg) { RACK_NVG_FORWARD(closePath()); }
+inline void nvgMoveTo(NVGcontext* vg, float x, float y) { RACK_NVG_FORWARD(moveTo(x, y)); }
+inline void nvgLineTo(NVGcontext* vg, float x, float y) { RACK_NVG_FORWARD(lineTo(x, y)); }
+inline void nvgBezierTo(NVGcontext* vg, float c1x, float c1y, float c2x, float c2y, float x, float y)
+{ RACK_NVG_FORWARD(bezierTo(c1x, c1y, c2x, c2y, x, y)); }
+inline void nvgRect(NVGcontext* vg, float x, float y, float w, float h) { RACK_NVG_FORWARD(rect(x, y, w, h)); }
+inline void nvgRoundedRect(NVGcontext* vg, float x, float y, float w, float h, float r)
+{ RACK_NVG_FORWARD(roundedRect(x, y, w, h, r)); }
+inline void nvgCircle(NVGcontext* vg, float cx, float cy, float r) { RACK_NVG_FORWARD(circle(cx, cy, r)); }
+inline void nvgEllipse(NVGcontext* vg, float cx, float cy, float rx, float ry) { RACK_NVG_FORWARD(ellipse(cx, cy, rx, ry)); }
+inline void nvgFill(NVGcontext* vg) { RACK_NVG_FORWARD(fill()); }
+inline void nvgStroke(NVGcontext* vg) { RACK_NVG_FORWARD(stroke()); }
+inline void nvgFillColor(NVGcontext* vg, NVGcolor c) { RACK_NVG_FORWARD(fillColor(c)); }
+inline void nvgStrokeColor(NVGcontext* vg, NVGcolor c) { RACK_NVG_FORWARD(strokeColor(c)); }
+inline void nvgStrokeWidth(NVGcontext* vg, float w) { RACK_NVG_FORWARD(strokeWidth(w)); }
+inline void nvgGlobalAlpha(NVGcontext* vg, float a) { RACK_NVG_FORWARD(globalAlpha(a)); }
+inline void nvgSave(NVGcontext* vg) { RACK_NVG_FORWARD(save()); }
+inline void nvgRestore(NVGcontext* vg) { RACK_NVG_FORWARD(restore()); }
+inline void nvgScissor(NVGcontext* vg, float x, float y, float w, float h) { RACK_NVG_FORWARD(scissor(x, y, w, h)); }
+inline void nvgIntersectScissor(NVGcontext* vg, float x, float y, float w, float h) { RACK_NVG_FORWARD(scissor(x, y, w, h)); }
+inline void nvgResetScissor(NVGcontext* vg) { RACK_NVG_FORWARD(resetScissor()); }
+inline void nvgTranslate(NVGcontext* vg, float x, float y) { RACK_NVG_FORWARD(translate(x, y)); }
+inline void nvgScale(NVGcontext* vg, float x, float y) { RACK_NVG_FORWARD(scale(x, y)); }
+inline void nvgRotate(NVGcontext* vg, float a) { RACK_NVG_FORWARD(rotate(a)); }
+inline void nvgFontSize(NVGcontext* vg, float s) { RACK_NVG_FORWARD(fontSize(s)); }
+inline void nvgTextAlign(NVGcontext* vg, int a) { RACK_NVG_FORWARD(textAlign(a)); }
+inline void nvgTextLetterSpacing(NVGcontext* vg, float s) { RACK_NVG_FORWARD(textLetterSpacing(s)); }
+
+inline float nvgText(NVGcontext* vg, float x, float y, const char* str, const char* end)
+{
+	return (vg && vg->backend) ? vg->backend->text(x, y, str, end) : 0.f;
+}
+
+// MOCK, and each for a reason:
+//   fontFaceId    — the backend resolves its own font; Rack's ShareTechMono is
+//                   not shipped, so a face id would name nothing.
+//   lineCap/Join/miterLimit — joins are the renderer's business here.
+//   composite ops — layer 1 IS the additive pass, so NVG_LIGHTER is implied.
+//   paints        — no module in this set fills with a gradient.
+inline void nvgFontFaceId(NVGcontext*, int) {}
 inline void nvgLineCap(NVGcontext*, int) {}
 inline void nvgLineJoin(NVGcontext*, int) {}
 inline void nvgMiterLimit(NVGcontext*, float) {}
-inline void nvgSave(NVGcontext*) {}
-inline void nvgRestore(NVGcontext*) {}
-inline void nvgScissor(NVGcontext*, float, float, float, float) {}
-inline void nvgIntersectScissor(NVGcontext*, float, float, float, float) {}
-inline void nvgResetScissor(NVGcontext*) {}
-inline void nvgTranslate(NVGcontext*, float, float) {}
-inline void nvgScale(NVGcontext*, float, float) {}
-inline void nvgRotate(NVGcontext*, float) {}
 inline void nvgGlobalCompositeOperation(NVGcontext*, int) {}
 inline void nvgGlobalCompositeBlendFunc(NVGcontext*, int, int) {}
-inline void nvgGlobalAlpha(NVGcontext*, float) {}
-inline void nvgFontSize(NVGcontext*, float) {}
-inline void nvgFontFaceId(NVGcontext*, int) {}
-inline void nvgTextAlign(NVGcontext*, int) {}
-inline void nvgTextLetterSpacing(NVGcontext*, float) {}
-inline float nvgText(NVGcontext*, float, float, const char*, const char*) { return 0.f; }
+inline void nvgFillPaint(NVGcontext*, NVGpaint) {}
 inline void nvgTextBox(NVGcontext*, float, float, float, const char*, const char*) {}
 inline NVGpaint nvgLinearGradient(NVGcontext*, float, float, float, float, NVGcolor, NVGcolor) { return {}; }
 inline NVGpaint nvgRadialGradient(NVGcontext*, float, float, float, float, NVGcolor, NVGcolor) { return {}; }
@@ -1676,9 +1742,36 @@ struct Widget
 		return nullptr;
 	}
 
-	virtual void draw(const DrawArgs&) {}
-	virtual void drawLayer(const DrawArgs&, int) {}
+	// Rack's Widget::draw recurses into the children, translating by each
+	// child's box.pos. Custom widgets chain to it — DigitalDisplay ends its
+	// own drawLayer with Widget::drawLayer(args, layer) — so the recursion has
+	// to be here, not in whatever is driving the top-level walk.
+	virtual void draw(const DrawArgs& args)
+	{
+		drawChildren(args, [](Widget* w, const DrawArgs& a) { w->draw(a); });
+	}
+
+	virtual void drawLayer(const DrawArgs& args, int layer)
+	{
+		drawChildren(args, [layer](Widget* w, const DrawArgs& a) { w->drawLayer(a, layer); });
+	}
+
 	virtual void step() {}
+
+	template<class F>
+	void drawChildren(const DrawArgs& args, F&& each)
+	{
+		for (auto* child : children)
+		{
+			if (!child || !child->visible)
+				continue;
+
+			nvgSave(args.vg);
+			nvgTranslate(args.vg, child->box.pos.x, child->box.pos.y);
+			each(child, args);
+			nvgRestore(args.vg);
+		}
+	}
 
 	// Rack names each event type twice and modules use both spellings.
 	using BaseEvent        = event::Base;
@@ -1793,8 +1886,21 @@ private:
 	std::vector<Entry> panels_;
 };
 
-// Display panels a module draws into. MOCK — see the nanovg note.
-struct LedDisplay : Widget {};
+// The dark rounded panel a module's display sits on. REAL: Rack draws this in
+// LedDisplay::draw, and the panel SVG does not include it — leave it out and
+// Scope's trace floats on bare panel.
+struct LedDisplay : Widget
+{
+	void draw(const DrawArgs& args) override
+	{
+		nvgBeginPath(args.vg);
+		nvgRoundedRect(args.vg, 0, 0, box.size.x, box.size.y, 5.0f);
+		nvgFillColor(args.vg, nvgRGB(0x19, 0x19, 0x19));
+		nvgFill(args.vg);
+
+		Widget::draw(args);
+	}
+};
 struct LedDisplaySeparator : Widget {};
 struct LedDisplayChoice : Widget { std::string text; std::string fontPath; Vec textOffset; NVGcolor color{}; NVGcolor bgColor{}; };
 struct LedDisplayTextField : Widget { std::string text; std::string fontPath; Vec textOffset; NVGcolor color{}; };
@@ -1807,6 +1913,26 @@ struct ParamWidget : Widget
 {
 	Module* module{};
 	int paramId{};
+
+	// Does this control turn? The editor draws a pointer line on the ones that
+	// do, since Fundamental's panel art has the knob cap but not the pointer.
+	// A button, latch or switch gets none — Scope's 1x2 and TRIG are latches,
+	// and a pointer on them reads as a tiny broken knob.
+	//
+	// Default false so a control type nobody has classified yet is left plain
+	// rather than decorated with a pointer that means nothing.
+	bool isKnob{ false };
+
+	// What the knob looks like, as sRGB hex.
+	//
+	// Fundamental's panel SVGs carry NO knob artwork — VCA's has not a single
+	// circle or ellipse in it — because Rack composites a component SVG on top
+	// at runtime. So the editor draws the body as well as the pointer, and
+	// these say what to draw. A black cap with a white pointer is Rack's
+	// RoundBlackKnob family; Trimpot overrides them for its silver cap.
+	uint32_t knobRimHex{ 0x0D0D0D };
+	uint32_t knobBodyHex{ 0x262626 };
+	uint32_t knobPointerHex{ 0xF5F5F5 };
 
 	// Modules reach through this for the parameter's range and current value.
 	ParamQuantity* getParamQuantity() const
@@ -1845,6 +1971,11 @@ struct LightWidget : Widget
 	NVGcolor color{};
 	NVGcolor bgColor{};
 	NVGcolor borderColor{};
+
+	// Rack's "Simple" light variants are the same lamp without the glow. The
+	// distinction is load-bearing on a lit BUTTON, where a halo the size of
+	// the button reads as the whole control lighting up.
+	bool hasHalo{ true };
 };
 
 // Rack's default appearance for a panel light: a half-grey lens at a third
@@ -1975,14 +2106,26 @@ struct RedGreenBlueLight : GrayModuleLightWidget
 // and is copied in alongside the modules. Defining them here would shadow the
 // real ones and quietly diverge.
 
-// Each of these takes the colours from its TLight argument by constructing one
-// and reading its base colours. Rack gets there by making the light an actual
-// child widget; the effect on what gets painted is the same.
+// What a lit control's lamp looks like, taken from its TLight argument by
+// constructing one and reading it. Rack gets there by making the light an
+// actual CHILD widget of the button; the effect on what gets painted is the
+// same — as long as the light's own SIZE comes across too.
+//
+// That size is the whole point. A VCVLightLatch is 9mm across and the
+// MediumSimpleLight inside it is 3.176mm. Paint the lamp at the button's size
+// and the entire bezel lights up instead of the LED in the middle of it.
+struct LightAppearance
+{
+	std::vector<NVGcolor> colors;
+	Vec  size{};
+	bool hasHalo{ true };
+};
+
 template<typename TLight>
-inline std::vector<NVGcolor> lightColorsOf()
+inline LightAppearance lightAppearanceOf()
 {
 	TLight probe;
-	return probe.baseColors;
+	return { probe.baseColors, probe.box.size, probe.hasHalo };
 }
 
 // Size classes wrap a colour class. The "Simple" variants differ only in
@@ -1992,10 +2135,10 @@ template<typename TBase> struct SmallLight  : TBase { SmallLight()  { this->box.
 template<typename TBase> struct MediumLight : TBase { MediumLight() { this->box.size = mm2px(Vec(3.176f, 3.176f)); } };
 template<typename TBase> struct LargeLight  : TBase { LargeLight()  { this->box.size = mm2px(Vec(5.179f, 5.179f)); } };
 
-template<typename TBase> struct TinySimpleLight   : TinyLight<TBase> {};
-template<typename TBase> struct SmallSimpleLight  : SmallLight<TBase> {};
-template<typename TBase> struct MediumSimpleLight : MediumLight<TBase> {};
-template<typename TBase> struct LargeSimpleLight  : LargeLight<TBase> {};
+template<typename TBase> struct TinySimpleLight   : TinyLight<TBase>   { TinySimpleLight()   { this->hasHalo = false; } };
+template<typename TBase> struct SmallSimpleLight  : SmallLight<TBase>  { SmallSimpleLight()  { this->hasHalo = false; } };
+template<typename TBase> struct MediumSimpleLight : MediumLight<TBase> { MediumSimpleLight() { this->hasHalo = false; } };
+template<typename TBase> struct LargeSimpleLight  : LargeLight<TBase>  { LargeSimpleLight()  { this->hasHalo = false; } };
 
 // Controls that are a parameter AND a light in one — a lit button, bezel or
 // slider. They carry both ids.
@@ -2003,11 +2146,22 @@ struct LightParamWidget : ParamWidget
 {
 	int firstLightId{ -1 };
 
-	// Rack builds a child light widget inside the button; this records the
-	// colours that widget would have had, so the editor can paint the lit part
+	// Rack builds a child light widget inside the button; this records what
+	// that widget would have looked like, so the editor can paint the lit part
 	// without a widget tree. Filled by the lit-control templates below from
-	// their TLight argument.
+	// their TLight argument — see lightAppearanceOf().
+	//
+	// `lightSize` is the LAMP's size, which is much smaller than the button's.
 	std::vector<NVGcolor> lightColors;
+	Vec  lightSize{};
+	bool lightHasHalo{ true };
+
+	void setLightAppearance(const LightAppearance& a)
+	{
+		lightColors  = a.colors;
+		lightSize    = a.size;
+		lightHasHalo = a.hasHalo;
+	}
 };
 
 struct VCVButton   : ParamWidget { VCVButton()   { box.size = mm2px(Vec(9.0f, 9.0f)); } };
@@ -2030,33 +2184,35 @@ template<typename TBase = LightButtonBase, typename TLight = WhiteLight>
 struct LightButton : TBase
 {
 	int firstLightId{ -1 };
-	std::vector<NVGcolor> lightColors{ lightColorsOf<TLight>() };
+	std::vector<NVGcolor> lightColors{ lightAppearanceOf<TLight>().colors };
+	Vec  lightSize{ lightAppearanceOf<TLight>().size };
+	bool lightHasHalo{ lightAppearanceOf<TLight>().hasHalo };
 };
 
 template<typename TLight = WhiteLight>
-struct VCVLightButton : LightParamWidget { VCVLightButton() { box.size = mm2px(Vec(9.0f, 9.0f)); lightColors = lightColorsOf<TLight>(); } };
+struct VCVLightButton : LightParamWidget { VCVLightButton() { box.size = mm2px(Vec(9.0f, 9.0f)); setLightAppearance(lightAppearanceOf<TLight>()); } };
 
 template<typename TLight = WhiteLight>
-struct VCVLightLatch : LightParamWidget { VCVLightLatch() { box.size = mm2px(Vec(9.0f, 9.0f)); lightColors = lightColorsOf<TLight>(); } };
+struct VCVLightLatch : LightParamWidget { VCVLightLatch() { box.size = mm2px(Vec(9.0f, 9.0f)); setLightAppearance(lightAppearanceOf<TLight>()); } };
 
 template<typename TLight = WhiteLight>
-struct VCVLightBezel : LightParamWidget { VCVLightBezel() { box.size = mm2px(Vec(9.0f, 9.0f)); lightColors = lightColorsOf<TLight>(); } };
+struct VCVLightBezel : LightParamWidget { VCVLightBezel() { box.size = mm2px(Vec(9.0f, 9.0f)); setLightAppearance(lightAppearanceOf<TLight>()); } };
 
 template<typename TLight = WhiteLight>
-struct VCVLightSlider : LightParamWidget { VCVLightSlider() { box.size = mm2px(Vec(5.0f, 30.0f)); lightColors = lightColorsOf<TLight>(); } };
+struct VCVLightSlider : LightParamWidget { VCVLightSlider() { box.size = mm2px(Vec(5.0f, 30.0f)); setLightAppearance(lightAppearanceOf<TLight>()); } };
 
 struct ThemedScrew      : Widget {};
-struct RoundBlackKnob   : ParamWidget { RoundBlackKnob()   { box.size = mm2px(Vec(9.5f, 9.5f)); } };
-struct Trimpot          : ParamWidget { Trimpot()          { box.size = mm2px(Vec(7.0f, 7.0f)); } };
+struct RoundBlackKnob   : ParamWidget { RoundBlackKnob()   { box.size = mm2px(Vec(9.5f, 9.5f)); isKnob = true; } };
+struct Trimpot          : ParamWidget { Trimpot()          { box.size = mm2px(Vec(7.0f, 7.0f)); isKnob = true; knobRimHex = 0x8A8A8A; knobBodyHex = 0xC8C8C8; knobPointerHex = 0x1A1A1A; } };
 struct CKSS               : ParamWidget { CKSS()               { box.size = mm2px(Vec(3.5f, 7.0f)); } };
 struct CKSSThreeHorizontal: ParamWidget { CKSSThreeHorizontal(){ box.size = mm2px(Vec(9.5f, 3.5f)); } };
-struct RoundSmallBlackKnob: ParamWidget { RoundSmallBlackKnob(){ box.size = mm2px(Vec(7.0f,  7.0f));  } };
-struct RoundLargeBlackKnob: ParamWidget { RoundLargeBlackKnob(){ box.size = mm2px(Vec(11.0f, 11.0f)); } };
-struct RoundHugeBlackKnob : ParamWidget { RoundHugeBlackKnob() { box.size = mm2px(Vec(14.0f, 14.0f)); } };
+struct RoundSmallBlackKnob: ParamWidget { RoundSmallBlackKnob(){ box.size = mm2px(Vec(7.0f,  7.0f)); isKnob = true; } };
+struct RoundLargeBlackKnob: ParamWidget { RoundLargeBlackKnob(){ box.size = mm2px(Vec(11.0f, 11.0f)); isKnob = true; } };
+struct RoundHugeBlackKnob : ParamWidget { RoundHugeBlackKnob() { box.size = mm2px(Vec(14.0f, 14.0f)); isKnob = true; } };
 struct ScrewSilver        : Widget      { ScrewSilver()        { box.size = mm2px(Vec(3.0f,  3.0f));  } };
 
 template<typename TLight = WhiteLight>
-struct LEDLightBezel : LightParamWidget { LEDLightBezel() { box.size = mm2px(Vec(9.0f, 9.0f)); lightColors = lightColorsOf<TLight>(); } };
+struct LEDLightBezel : LightParamWidget { LEDLightBezel() { box.size = mm2px(Vec(9.0f, 9.0f)); setLightAppearance(lightAppearanceOf<TLight>()); } };
 struct CKSSThree        : ParamWidget { CKSSThree()        { box.size = mm2px(Vec(3.5f, 9.5f)); } };
 
 // 23.7px is the literal size of Rack's res/ComponentLibrary/PJ301M.svg, so

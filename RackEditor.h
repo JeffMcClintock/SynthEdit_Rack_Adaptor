@@ -43,6 +43,7 @@
 #include "helpers/ContextMenuHelper.h"
 
 #include "RackPanelLayout.h"
+#include "RackNanoVg.h"
 
 namespace rack_adaptor
 {
@@ -53,7 +54,7 @@ inline constexpr float knobSweepDegrees = 150.0f;
 // A full sweep takes this many pixels of vertical drag.
 inline constexpr float knobDragPixels = 200.0f;
 
-class RackEditor : public gmpi::editor::PluginEditor
+class RackEditor : public gmpi::editor::PluginEditor, public gmpi::api::IDrawingLayer
 {
 public:
 	// panelSvg is optional: pass nullptr and the panel named by the module's
@@ -66,6 +67,23 @@ public:
 		assert(model && "VCV model not registered - is the module's .cpp compiled into this plugin?");
 		if (model)
 			layout = readPanelLayout(*model);
+
+		// A module and widget of our own, KEPT rather than probed and dropped.
+		//
+		// readPanelLayout builds a pair, reads the positions off them and
+		// throws both away, which is all the jacks and knobs need. A module
+		// that draws part of its own panel needs its widget to still exist at
+		// render time, because that widget's draw() is the drawing code.
+		//
+		// The module instance is separate from the processor's — GMPI gives
+		// each side its own — so its DSP state stays at whatever construction
+		// left it. Parameters do cross, and are pushed into it before every
+		// render, so anything drawn from a knob position is live.
+		if (model)
+		{
+			displayModule.reset(model->createModule());
+			displayWidget.reset(model->createModuleWidget(displayModule.get()));
+		}
 
 		if (!panelSvg && !layout.panelPath.empty())
 			panelSvg = rack::PanelRegistry::instance().find(layout.panelPath);
@@ -144,7 +162,56 @@ public:
 		return gmpi::ReturnCode::Ok;
 	}
 
+	// Layers, and they line up with Rack's exactly.
+	//
+	// Rack draws a panel twice: once normally, then once more for anything
+	// that glows, composited additively. A module states which pass it wants
+	// by overriding draw() or drawLayer(args, 1) — Scope draws its trace
+	// ENTIRELY in layer 1. GMPI has the same two passes under a different
+	// name, so a module's choice carries over unchanged.
+	//
+	// Implementing IDrawingLayer means SynthEdit calls renderLayer(0) in place
+	// of render(), and renderLayer(1) in a later additive pass. render() is
+	// kept for hosts that do not ask for layers, and does both in order.
+	gmpi::ReturnCode renderLayer(gmpi::drawing::api::IDeviceContext* drawingContext, int32_t layer) override
+	{
+		if (layer == 0)
+			return renderBase(drawingContext);
+
+		if (layer == 1)
+			return renderGlow(drawingContext);
+
+		return gmpi::ReturnCode::NoSupport;
+	}
+
 	gmpi::ReturnCode render(gmpi::drawing::api::IDeviceContext* drawingContext) override
+	{
+		const auto rc = renderBase(drawingContext);
+		if (rc != gmpi::ReturnCode::Ok)
+			return rc;
+
+		return renderGlow(drawingContext);
+	}
+
+	int32_t addRef() override  { return PluginEditor::addRef(); }
+	int32_t release() override { return PluginEditor::release(); }
+
+	gmpi::ReturnCode queryInterface(const gmpi::api::Guid* iid, void** returnInterface) override
+	{
+		*returnInterface = {};
+
+		if ((*iid) == gmpi::api::IDrawingLayer::guid)
+		{
+			*returnInterface = static_cast<gmpi::api::IDrawingLayer*>(this);
+			PluginEditor::addRef();
+			return gmpi::ReturnCode::Ok;
+		}
+
+		return PluginEditor::queryInterface(iid, returnInterface);
+	}
+
+private:
+	gmpi::ReturnCode renderBase(gmpi::drawing::api::IDeviceContext* drawingContext)
 	{
 		gmpi::drawing::Graphics g(drawingContext);
 		gmpi::drawing::ClipDrawingToBounds _(g, bounds);
@@ -168,12 +235,91 @@ public:
 			SvgParser::drawFromMemory(g, svg);
 		}
 
+		// The module's own drawing, first pass. Before the jacks and knobs,
+		// because a display panel is background to them.
+		drawModuleWidgets(g, /*layer*/ -1);
+
 		drawJacks(g);
-		drawKnobIndicators(g);
+		drawKnobs(g);
 		drawLights(g);
 
 		return gmpi::ReturnCode::Ok;
 	}
+
+	// The additive pass: whatever the module draws in drawLayer(args, 1).
+	gmpi::ReturnCode renderGlow(gmpi::drawing::api::IDeviceContext* drawingContext)
+	{
+		if (!displayWidget)
+			return gmpi::ReturnCode::Ok;
+
+		gmpi::drawing::Graphics g(drawingContext);
+		gmpi::drawing::ClipDrawingToBounds _(g, bounds);
+
+		drawModuleWidgets(g, /*layer*/ 1);
+
+		return gmpi::ReturnCode::Ok;
+	}
+
+	// Walk the module's own widget tree and let it draw.
+	//
+	// ONLY the widgets this editor does not already draw itself. Params, ports
+	// and lights are skipped for two reasons: the editor renders them from the
+	// layout (jacks, knob indicators, LEDs), and — the one that would actually
+	// break — the mock stores a control's CENTRE in box.pos for every
+	// create*Centered widget, which is not what a draw walk expects. Custom
+	// displays are placed with plain createWidget(), which keeps the top-left
+	// Rack means, so they are safe to walk.
+	//
+	// layer -1 means the normal pass, i.e. draw(); otherwise drawLayer().
+	void drawModuleWidgets(gmpi::drawing::Graphics& g, int layer)
+	{
+		if (!displayWidget)
+			return;
+
+		pushParametersToDisplayModule();
+
+		NanoVgGraphics backend(g);
+		const auto args = backend.args();
+
+		for (auto* child : displayWidget->children)
+		{
+			if (!child || !child->visible)
+				continue;
+
+			if (dynamic_cast<rack::ParamWidget*>(child)
+			 || dynamic_cast<rack::PortWidget*>(child)
+			 || dynamic_cast<rack::LightWidget*>(child)
+			 || dynamic_cast<rack::SvgPanel*>(child))
+				continue;
+
+			nvgSave(args.vg);
+			nvgTranslate(args.vg, child->box.pos.x, child->box.pos.y);
+
+			if (layer < 0)
+				child->draw(args);
+			else
+				child->drawLayer(args, layer);
+
+			nvgRestore(args.vg);
+		}
+	}
+
+	// The editor's module instance never runs process(), so its DSP state is
+	// whatever the constructor left. Its PARAMETERS can be live though, and a
+	// good deal of custom drawing reads them — Scope's gain, offset and
+	// Lissajous mode all come from knobs. Pushing them across costs nothing and
+	// makes that part of every display track the panel.
+	void pushParametersToDisplayModule()
+	{
+		if (!displayModule)
+			return;
+
+		const std::size_t count = (std::min)(paramPins.size(), displayModule->params.size());
+		for (std::size_t i = 0; i < count; ++i)
+			displayModule->params[i].setValue(paramPins[i].value);
+	}
+
+public:
 
 	gmpi::ReturnCode onPointerDown(gmpi::drawing::Point point, int32_t /*flags*/) override
 	{
@@ -408,13 +554,9 @@ private:
 	// which is what makes Compare's yellow/blue indicator read as one lamp
 	// changing colour rather than two lamps fighting.
 	//
-	// COLOUR SPACE, and this is deliberate rather than overlooked: Rack's
-	// SCHEME_* constants are sRGB-encoded, and gmpi_ui's Color components are
-	// linear. The components are passed straight through, so an LED renders a
-	// little brighter and less saturated than the same one in Rack —
-	// SCHEME_YELLOW's 0.797 green lands at 231/255 rather than 203/255.
-	// Blending stays correct, which is the property worth keeping; matching
-	// Rack exactly would mean adopting its sRGB blending, which is not.
+	// Colours arrive sRGB-encoded and are decoded to linear by toColor(), so
+	// what is drawn is the colour the module asked for while the blend above
+	// stays linear. See the note on toColor() in RackNanoVg.h.
 	void drawLights(gmpi::drawing::Graphics& g)
 	{
 		using namespace gmpi::drawing;
@@ -431,19 +573,30 @@ private:
 			const Point centre{ l.x, l.y };
 			const Ellipse lens{ centre, r, r };
 
-			// The unlit lens, always.
-			auto bg = g.createSolidColorBrush(Color{ 0.5f, 0.5f, 0.5f, 0.33f });
+			// The unlit lens, always. Rack's GrayModuleLightWidget values,
+			// decoded from sRGB like every other colour that comes from a
+			// module — see toColor().
+			auto bg = g.createSolidColorBrush(toColor({ 0.5f, 0.5f, 0.5f, 0.33f }));
 			g.fillEllipse(lens, bg);
 
-			auto border = g.createSolidColorBrush(Color{ 0.0f, 0.0f, 0.0f, 0.15f });
+			auto border = g.createSolidColorBrush(toColor({ 0.0f, 0.0f, 0.0f, 0.15f }));
 			g.drawEllipse(lens, border, (std::max)(0.5f, r * 0.1f));
 
 			const Color lit = mixLight(l);
             if (lit.a <= 0.0f)
                 continue;
 
-			// The halo: constant out to the lens edge, fading to nothing at
-			// four radii. Drawn BEFORE the lit lens so the lens stays crisp.
+			// The halo, unless this is one of Rack's "Simple" lights, which are
+			// the same lamp without a glow. Constant out to the lens edge then
+			// fading to nothing at four radii; drawn BEFORE the lit lens so the
+			// lens itself stays crisp.
+			if (!l.hasHalo)
+			{
+				auto plain = g.createSolidColorBrush(lit);
+				g.fillEllipse(lens, plain);
+				continue;
+			}
+
 			const float outer = r * 4.0f;
 			const Color haloColor{ lit.r, lit.g, lit.b, lit.a * 0.25f };
 			const Color clear{ lit.r, lit.g, lit.b, 0.0f };
@@ -479,15 +632,17 @@ private:
 
 			const auto& c = l.colors[i];
 
+			const auto lit = toColor(c);
+
 			if (mixed.a <= 0.0f)
 			{
-				mixed = { c.r, c.g, c.b, b };
+				mixed = { lit.r, lit.g, lit.b, b };
 				continue;
 			}
 
-			mixed.r = 1.0f - (1.0f - mixed.r) * (1.0f - c.r);
-			mixed.g = 1.0f - (1.0f - mixed.g) * (1.0f - c.g);
-			mixed.b = 1.0f - (1.0f - mixed.b) * (1.0f - c.b);
+			mixed.r = 1.0f - (1.0f - mixed.r) * (1.0f - lit.r);
+			mixed.g = 1.0f - (1.0f - mixed.g) * (1.0f - lit.g);
+			mixed.b = 1.0f - (1.0f - mixed.b) * (1.0f - lit.b);
 			mixed.a = (std::max)(mixed.a, b);
 		}
 
@@ -520,7 +675,7 @@ private:
 			if (lightId < l.firstLightId || lightId >= l.firstLightId + (int)l.colors.size())
 				continue;
 
-			const float reach = l.radius() * 4.0f;
+			const float reach = l.radius() * (l.hasHalo ? 4.0f : 1.0f);
 			const gmpi::drawing::Rect b{ l.x - reach, l.y - reach, l.x + reach, l.y + reach };
 
 			r = found ? gmpi::drawing::Rect{ (std::min)(r.left,   b.left),
@@ -534,31 +689,55 @@ private:
 		return r;
 	}
 
-	// Only the moving part — the panel art already has the knob caps.
-	void drawKnobIndicators(gmpi::drawing::Graphics& g)
+	// The knobs — body and pointer both.
+	//
+	// The panel art does NOT include knob caps. That was an assumption this
+	// code used to make, and VCA disproves it: its SVG contains not one circle
+	// or ellipse, because Rack composites a component SVG over the panel at
+	// runtime and Fundamental's files only carry the labels and tick marks. A
+	// pointer alone therefore floated on bare panel, and a black pointer on a
+	// black knob would be invisible even once the cap was drawn.
+	//
+	// So the knob is drawn here, like the jacks: two concentric fills for the
+	// cap and its rim, then the pointer. Colours come from the control type —
+	// Rack's RoundBlackKnob family is a black cap with a white pointer, and
+	// Trimpot is a silver cap with a dark one.
+	void drawKnobs(gmpi::drawing::Graphics& g)
 	{
 		if (layout.params.empty())
 			return;
 
-		auto brush = g.createSolidColorBrush(gmpi::drawing::Colors::Black);
+		using namespace gmpi::drawing;
 
 		for (const auto& c : layout.params)
 		{
+			// Buttons, latches and switches do not turn, so they get nothing.
+			if (!c.isKnob)
+				continue;
+
 			const float r = c.radius();
 			if (r <= 0.0f)
 				continue;
+
+			const Point centre{ c.x, c.y };
+
+			auto rim  = g.createSolidColorBrush(colorFromHex(c.knobRimHex));
+			auto body = g.createSolidColorBrush(colorFromHex(c.knobBodyHex));
+
+			g.fillEllipse(Ellipse{ centre, r, r }, rim);
+			g.fillEllipse(Ellipse{ centre, r * 0.90f, r * 0.90f }, body);
 
 			const float t = std::clamp(c.normalise(value(c.id)), 0.0f, 1.0f);
 			const float degrees = -knobSweepDegrees + t * 2.0f * knobSweepDegrees;
 			const float radians = degrees * 3.14159265f / 180.0f;
 
 			// 0 degrees is 12 o'clock, positive clockwise; y grows downward.
-			const float tip = r * 0.75f;
-			const gmpi::drawing::Point centre{ c.x, c.y };
-			const gmpi::drawing::Point end{ c.x + std::sin(radians) * tip,
-			                                c.y - std::cos(radians) * tip };
+			const float tip = r * 0.72f;
+			const Point end{ c.x + std::sin(radians) * tip,
+			                 c.y - std::cos(radians) * tip };
 
-			g.drawLine(centre, end, brush, (std::max)(1.0f, r * 0.12f));
+			auto pointer = g.createSolidColorBrush(colorFromHex(c.knobPointerHex));
+			g.drawLine(centre, end, pointer, (std::max)(1.5f, r * 0.15f));
 		}
 	}
 
@@ -595,6 +774,11 @@ private:
 	std::deque<gmpi::editor::Pin<int32_t>> menuIntPins;
 	std::deque<gmpi::editor::Pin<bool>>    menuBoolPins;
 	std::deque<gmpi::editor::Pin<float>>   lightPins;
+
+	// Kept alive for the whole life of the editor: a module that draws part of
+	// its own panel does it from this widget.
+	std::unique_ptr<rack::Module>       displayModule;
+	std::unique_ptr<rack::ModuleWidget> displayWidget;
 
 	int  dragging{ -1 };
 	gmpi::drawing::Point lastMouse{};

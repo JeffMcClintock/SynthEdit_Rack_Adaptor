@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -47,6 +48,13 @@ struct ControlLayout
 	// Params only, from configParam().
 	float minValue{}, maxValue{ 1.0f }, defaultValue{};
 	std::string name;
+
+	// Params only: whether the editor should draw a knob on it, and in what
+	// colours. See ParamWidget — the panel art has no knob bodies.
+	bool isKnob{ false };
+	std::uint32_t knobRimHex{ 0x0D0D0D };
+	std::uint32_t knobBodyHex{ 0x262626 };
+	std::uint32_t knobPointerHex{ 0xF5F5F5 };
 
 	float radius() const { return 0.5f * (std::min)(width, height); }
 
@@ -131,9 +139,16 @@ struct LightLayout
 {
 	int   firstLightId{ -1 };
 	float x{}, y{};            // centre
+
+	// The LAMP's size, not the control's. On a lit button they are very
+	// different — a VCVLightLatch is 9mm across and its lamp is 3.176mm — and
+	// painting at the button's size lights the whole bezel.
 	float width{}, height{};
 
 	std::vector<rack::NVGcolor> colors;
+
+	// Rack's "Simple" light variants are the same lamp with no glow.
+	bool hasHalo{ true };
 
 	float radius() const { return 0.5f * (std::min)(width, height); }
 };
@@ -257,7 +272,9 @@ inline PanelLayout readPanelLayout(rack::Model& model)
 			w->box.pos.x, w->box.pos.y,
 			w->box.size.x, w->box.size.y,
 			q.minValue, q.maxValue, q.defaultValue,
-			q.name });
+			q.name,
+			w->isKnob,
+			w->knobRimHex, w->knobBodyHex, w->knobPointerHex });
 	}
 
 	auto collectPorts = [](const std::vector<rack::PortWidget*>& src,
@@ -292,18 +309,23 @@ inline PanelLayout readPanelLayout(rack::Model& model)
 	// and arrive through addParam(), which also calls addChild(), so one walk
 	// covers both.
 	{
-		auto record = [&](int firstLightId, const rack::Rect& box, const std::vector<rack::NVGcolor>& colors)
+		// `centre` is where the lamp sits — for a lit button, the button's own
+		// centre, because Rack centres the light widget inside it. `size` is
+		// the LAMP's, which is why it is passed separately from the box.
+		auto record = [&](int firstLightId, rack::Vec centre, rack::Vec size,
+		                  const std::vector<rack::NVGcolor>& colors, bool hasHalo)
 		{
 			if (firstLightId < 0 || colors.empty())
 				return;   // a light with no colour has nothing to paint
 
 			LightLayout l;
 			l.firstLightId = firstLightId;
-			l.x = box.pos.x;
-			l.y = box.pos.y;
-			l.width = box.size.x;
-			l.height = box.size.y;
+			l.x = centre.x;
+			l.y = centre.y;
+			l.width = size.x;
+			l.height = size.y;
 			l.colors = colors;
+			l.hasHalo = hasHalo;
 			layout.lights.push_back(std::move(l));
 
 			for (std::size_t i = 0; i < colors.size(); ++i)
@@ -316,10 +338,17 @@ inline PanelLayout readPanelLayout(rack::Model& model)
 
 		for (auto* child : widget->children)
 		{
+			// A plain light widget IS the lamp, so its own box is the size.
 			if (auto* lw = dynamic_cast<rack::LightWidget*>(child))
-				record(lw->firstLightId, lw->box, lw->baseColors);
+			{
+				record(lw->firstLightId, lw->box.pos, lw->box.size, lw->baseColors, lw->hasHalo);
+			}
+			// A lit button is a bezel with a much smaller lamp centred in it.
 			else if (auto* lp = dynamic_cast<rack::LightParamWidget*>(child))
-				record(lp->firstLightId, lp->box, lp->lightColors);
+			{
+				const auto size = (lp->lightSize.x > 0.0f) ? lp->lightSize : lp->box.size;
+				record(lp->firstLightId, lp->box.pos, size, lp->lightColors, lp->lightHasHalo);
+			}
 		}
 
 		std::sort(layout.displayedLightIds.begin(), layout.displayedLightIds.end());
