@@ -267,9 +267,12 @@ inline PanelLayout readPanelLayout(rack::Model& model)
 
 		const auto& q = *probe->paramQuantities[w->paramId];
 
+		// box.pos is a top-left, as in Rack; everything downstream wants the
+		// centre, and both terms are final by now.
 		layout.params.push_back({
 			w->paramId,
-			w->box.pos.x, w->box.pos.y,
+			w->box.pos.x + w->box.size.x * 0.5f,
+			w->box.pos.y + w->box.size.y * 0.5f,
 			w->box.size.x, w->box.size.y,
 			q.minValue, q.maxValue, q.defaultValue,
 			q.name,
@@ -289,8 +292,8 @@ inline PanelLayout readPanelLayout(rack::Model& model)
 
 			ControlLayout c;
 			c.id = w->portId;
-			c.x = w->box.pos.x;
-			c.y = w->box.pos.y;
+			c.x = w->box.pos.x + w->box.size.x * 0.5f;
+			c.y = w->box.pos.y + w->box.size.y * 0.5f;
 			c.width = w->box.size.x;
 			c.height = w->box.size.y;
 			c.name = names[w->portId];
@@ -339,15 +342,20 @@ inline PanelLayout readPanelLayout(rack::Model& model)
 		for (auto* child : widget->children)
 		{
 			// A plain light widget IS the lamp, so its own box is the size.
+			const auto centreOf = [](const rack::Rect& b)
+			{
+				return rack::Vec{ b.pos.x + b.size.x * 0.5f, b.pos.y + b.size.y * 0.5f };
+			};
+
 			if (auto* lw = dynamic_cast<rack::LightWidget*>(child))
 			{
-				record(lw->firstLightId, lw->box.pos, lw->box.size, lw->baseColors, lw->hasHalo);
+				record(lw->firstLightId, centreOf(lw->box), lw->box.size, lw->baseColors, lw->hasHalo);
 			}
 			// A lit button is a bezel with a much smaller lamp centred in it.
 			else if (auto* lp = dynamic_cast<rack::LightParamWidget*>(child))
 			{
 				const auto size = (lp->lightSize.x > 0.0f) ? lp->lightSize : lp->box.size;
-				record(lp->firstLightId, lp->box.pos, size, lp->lightColors, lp->lightHasHalo);
+				record(lp->firstLightId, centreOf(lp->box), size, lp->lightColors, lp->lightHasHalo);
 			}
 		}
 

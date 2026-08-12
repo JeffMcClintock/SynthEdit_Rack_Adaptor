@@ -2224,10 +2224,19 @@ struct PJNMPort         : PortWidget { PJNMPort()         { box.size = Vec(23.7f
 struct ThemedPJNMPort   : PortWidget { ThemedPJNMPort()   { box.size = Vec(23.7f, 23.7f); } };
 struct CL1362Port       : PortWidget { CL1362Port()       { box.size = Vec(33.0f, 33.0f); } };
 
-// NOTE ON box.pos: for widgets made by the *Centered helpers below, the mock
-// leaves box.pos holding the CENTRE. Rack converts it to a top-left; we do
-// not, because the centre is exactly what a patch point needs and nothing
-// here lays anything out. Read box.pos as "where createXxxCentered put it".
+// box.pos holds the widget's TOP-LEFT, exactly as Rack does.
+//
+// This mock used to store a CENTRE here, because a centre is what patch points,
+// jack drawing and knob hit-testing all want and nothing else read box.pos.
+// That stopped being true once modules started drawing themselves: a widget's
+// own draw() is written against Rack's convention, so it landed half a widget
+// off. VCA-1 showed it twice over — its VU meter is a ParamWidget that draws
+// its own bars, and it resizes itself AFTER createParam, so a centre computed
+// at construction was derived from the wrong size anyway.
+//
+// The centre is derived where it is needed, in readPanelLayout, from
+// box.pos + box.size / 2 — arithmetic on two values that are both final by
+// then, so it cannot go stale.
 template<class T> T* createWidget(Vec pos)
 {
 	T* w = new T;
@@ -2238,7 +2247,7 @@ template<class T> T* createWidget(Vec pos)
 template<class T> T* createParamCentered(Vec centre, Module* module, int paramId)
 {
 	T* w = new T;
-	w->box.pos = centre;
+	w->box.pos = { centre.x - w->box.size.x * 0.5f, centre.y - w->box.size.y * 0.5f };
 	w->module = module;
 	w->paramId = paramId;
 	return w;
@@ -2247,7 +2256,7 @@ template<class T> T* createParamCentered(Vec centre, Module* module, int paramId
 template<class T> T* createInputCentered(Vec centre, Module* module, int portId)
 {
 	T* w = new T;
-	w->box.pos = centre;
+	w->box.pos = { centre.x - w->box.size.x * 0.5f, centre.y - w->box.size.y * 0.5f };
 	w->module = module;
 	w->portId = portId;
 	return w;
@@ -2256,24 +2265,18 @@ template<class T> T* createInputCentered(Vec centre, Module* module, int portId)
 template<class T> T* createOutputCentered(Vec centre, Module* module, int portId)
 {
 	T* w = new T;
-	w->box.pos = centre;
+	w->box.pos = { centre.x - w->box.size.x * 0.5f, centre.y - w->box.size.y * 0.5f };
 	w->module = module;
 	w->portId = portId;
 	return w;
 }
 
-// The non-centred forms. Rack takes a TOP-LEFT here; box.pos holds the centre
-// throughout this mock, so convert on the way in — otherwise every control a
-// module places this way would be drawn and hit-tested half a widget off.
-inline Vec topLeftToCentre(Vec topLeft, Vec size)
-{
-	return { topLeft.x + size.x * 0.5f, topLeft.y + size.y * 0.5f };
-}
+// The non-centred forms. Rack takes a top-left here, and so do we.
 
 template<class T> T* createParam(Vec topLeft, Module* module, int paramId)
 {
 	T* w = new T;
-	w->box.pos = topLeftToCentre(topLeft, w->box.size);
+	w->box.pos = topLeft;
 	w->module = module;
 	w->paramId = paramId;
 	return w;
@@ -2282,7 +2285,7 @@ template<class T> T* createParam(Vec topLeft, Module* module, int paramId)
 template<class T> T* createInput(Vec topLeft, Module* module, int portId)
 {
 	T* w = new T;
-	w->box.pos = topLeftToCentre(topLeft, w->box.size);
+	w->box.pos = topLeft;
 	w->module = module;
 	w->portId = portId;
 	return w;
@@ -2291,7 +2294,7 @@ template<class T> T* createInput(Vec topLeft, Module* module, int portId)
 template<class T> T* createOutput(Vec topLeft, Module* module, int portId)
 {
 	T* w = new T;
-	w->box.pos = topLeftToCentre(topLeft, w->box.size);
+	w->box.pos = topLeft;
 	w->module = module;
 	w->portId = portId;
 	return w;
@@ -2300,7 +2303,7 @@ template<class T> T* createOutput(Vec topLeft, Module* module, int portId)
 template<class T> T* createLight(Vec topLeft, Module* module, int firstLightId)
 {
 	T* w = new T;
-	w->box.pos = topLeftToCentre(topLeft, w->box.size);
+	w->box.pos = topLeft;
 	w->module = module;
 	w->firstLightId = firstLightId;
 	return w;
@@ -2310,7 +2313,7 @@ template<class T> T* createLight(Vec topLeft, Module* module, int firstLightId)
 template<class T> T* createLightParamCentered(Vec centre, Module* module, int paramId, int firstLightId)
 {
 	T* w = new T;
-	w->box.pos = centre;
+	w->box.pos = { centre.x - w->box.size.x * 0.5f, centre.y - w->box.size.y * 0.5f };
 	w->module = module;
 	w->paramId = paramId;
 	w->firstLightId = firstLightId;
@@ -2320,7 +2323,7 @@ template<class T> T* createLightParamCentered(Vec centre, Module* module, int pa
 template<class T> T* createLightParam(Vec topLeft, Module* module, int paramId, int firstLightId)
 {
 	T* w = new T;
-	w->box.pos = topLeftToCentre(topLeft, w->box.size);
+	w->box.pos = topLeft;
 	w->module = module;
 	w->paramId = paramId;
 	w->firstLightId = firstLightId;
@@ -2330,7 +2333,7 @@ template<class T> T* createLightParam(Vec topLeft, Module* module, int paramId, 
 template<class T> T* createLightCentered(Vec centre, Module* module, int firstLightId)
 {
 	T* w = new T;
-	w->box.pos = centre;
+	w->box.pos = { centre.x - w->box.size.x * 0.5f, centre.y - w->box.size.y * 0.5f };
 	w->module = module;
 	w->firstLightId = firstLightId;
 	return w;

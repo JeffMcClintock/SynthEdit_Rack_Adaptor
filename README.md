@@ -107,13 +107,23 @@ Not yet supported: preset save/load beyond parameters (`dataToJson` is an inert
 stub), polyphony beyond mono, and pointer events into custom widgets
 (`onButton`, `onDragHover`, … are declared and overridable but not dispatched).
 
-**A custom display draws, but only from state the editor can see.** The editor
-and the processor own separate module instances and only parameter values cross
-between them, so a display fed by knobs draws correctly and one fed by DSP state
-draws nothing. Scope is the clear case: panel, graticule and trigger marker all
-render and track the knobs, and the trace is absent because the editor's module
-has zero channels. Closing that needs a state transport, which does not exist
-yet — see PORTING.md.
+**A display fed by DSP state needs one line in the port.** The editor and the
+processor own separate module instances and only parameter values cross between
+them. A display fed by knobs therefore draws correctly on its own; one fed by
+what `process()` computed needs its state shipped across, and the adaptor cannot
+guess which members that is. `RACK_DISPLAY_STATE` names them:
+
+```cpp
+#include "RackModule.h"
+#include "vcv/Scope.cpp"
+
+RACK_DISPLAY_STATE(&Scope::pointBuffer, &Scope::channelsX,
+                   &Scope::channelsY,   &Scope::bufferIndex)
+```
+
+The module type is deduced, every member is checked trivially copyable, and the
+bytes travel on a private blob parameter at display rate. See
+`RackDisplayState.h`.
 
 ## Pieces
 
@@ -129,6 +139,8 @@ yet — see PORTING.md.
   `osdialog.h` and `dr_wav.h` are stubs that report "cancelled" and "could not
   open", which is a path the modules already handle. Each header explains at
   the top what it does, what it does not, and what to do to make it real.
+- **`RackDisplayState.h`** — `RACK_DISPLAY_STATE`, the one-line declaration that
+  ships a module's DSP state to whatever draws it.
 - **`RackPanelLayout.h`** — reads every control's position, size, id and range
   out of the module's own `ModuleWidget`.
 - **`RackAdaptor.h`** — `generatePluginXml()` and `RackProcessor`, the generic
@@ -158,8 +170,13 @@ define list on semicolons and mangles parentheses.
 
 - **Volts**: GMPI 1.0 = 10V. Audio pins scale ×10 in / ÷10 out so module
   idioms like `cv / 10.f` see real volts. Parameter pins are raw.
-- **`isConnected()`**: the adaptor drives every port, so a module never sees an
-  unconnected input; one that normalises to a fallback will read 0V instead.
+- **`isConnected()` always answers true**, because the adaptor gives every port
+  a buffer. A module that normalises an unpatched input to a fallback reads 0V
+  instead, and this is not cosmetic: VCA-1 multiplies its level by its CV input
+  whenever that input is "connected", so it passes silence until something is
+  patched into CV. GMPI's `isStreaming()` looks like the fix and is not — a
+  connected input holding a steady CV reports false, which would make a real
+  patch look unpatched. Wants a proper connectivity query.
 - **Lights travel DSP -> GUI as parameters.** A light's brightness is computed
   in `process()`, on the processor's module instance, and the editor owns a
   different one. Each displayed light therefore gets a private, non-persistent

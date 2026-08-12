@@ -49,11 +49,13 @@
 #include <cstdio>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "Processor.h"
 #include "rack.hpp"          // the Rack mock (same include upstream compiles against)
 #include "RackPanelLayout.h"    // where the module says its controls are
+#include "RackDisplayState.h"   // how a custom display gets its DSP state
 
 namespace rack_adaptor
 {
@@ -255,6 +257,26 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 		x += "\" datatype=\"float\" private=\"true\" ignorePatchChange=\"true\" persistant=\"false\"/>\n";
 	}
 
+	// The display-state blob: the channel a custom display's DSP state travels
+	// on. Same shape as a light — private, not persisted — carrying bytes.
+	//
+	// EMITTED UNCONDITIONALLY, even for the majority of modules that will never
+	// send anything on it, and that is deliberate. Whether a module HAS display
+	// state is only known once RACK_DISPLAY_STATE has run, and that sits after
+	// the #include of upstream's source — while this function runs from
+	// createModel(), which is at the BOTTOM of that same file and therefore
+	// EARLIER. Asking here would always answer "no".
+	//
+	// The alternative was a second macro before the include to declare intent,
+	// which is an ordering rule for the next porter to get wrong. One unused
+	// private parameter is the cheaper mistake: the processor never writes it,
+	// the editor never reads it, and nothing shows it to a user.
+	const std::size_t displayStateParamId = lightParamBase + layout.displayedLightIds.size();
+
+	x += "    <Parameter id=\"" + std::to_string(displayStateParamId);
+	x += "\" name=\"Display State\" datatype=\"blob\" private=\"true\"";
+	x += " ignorePatchChange=\"true\" persistant=\"false\"/>\n";
+
 	x += "  </Parameters>\n";
 
 	// The editor registers separately (withId / registerEditor), but its pins
@@ -283,6 +305,8 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 		x += "    <Pin name=\"Light " + std::to_string(layout.displayedLightIds[i]);
 		x += "\" datatype=\"float\" private=\"true\" parameterId=\"" + std::to_string(lightParamBase + i) + "\" />\n";
 	}
+	x += "    <Pin name=\"Display State\" datatype=\"blob\" private=\"true\" parameterId=\"";
+	x += std::to_string(displayStateParamId) + "\" />\n";
 	x += "  </GUI>\n";
 
 	// Audio pins — inputs, then outputs, then one pin per parameter. This
@@ -342,6 +366,8 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 		x += "\" direction=\"out\" datatype=\"float\" private=\"true\" parameterId=\"";
 		x += std::to_string(lightParamBase + i) + "\" />\n";
 	}
+	x += "    <Pin name=\"Display State\" direction=\"out\" datatype=\"blob\" private=\"true\" parameterId=\"";
+	x += std::to_string(displayStateParamId) + "\" />\n";
 	x += "  </Audio>\n";
 
 	// Jack positions, from the module's own widget. Indexed against the <Audio>
@@ -403,12 +429,25 @@ public:
 			}
 		}
 
+		// The display-state blob is last of all in the <Audio> section, so it
+		// is constructed after the lights below. Look the codec up now, while
+		// the module is to hand.
+		displayState = findDisplayState(*module);
+
 		// Light outputs, last in the <Audio> section and therefore last here.
 		// These are the one thing the DSP SENDS rather than receives: the
 		// module computes an LED's brightness in process() and the editor has
 		// no way to know it otherwise, owning a different module instance.
 		for (std::size_t i = 0; i < layout.displayedLightIds.size(); ++i)
 			lightPins.emplace_back();
+
+		// Constructed whether or not this module has state to send, because the
+		// pin is in the <Audio> list either way and pins are numbered by
+		// construction order.
+		displayStatePin.emplace();
+
+		if (displayState)
+			displayStateBytes.resize(displayState->size);
 
 		// Every port has a GMPI pin and every pin has a buffer, so from the
 		// module's point of view everything is patched. Modules commonly
@@ -485,6 +524,31 @@ public:
 		}
 
 		sendLights(sampleFrames);
+		sendDisplayState(sampleFrames);
+	}
+
+	// Ship the module's display state to the editor.
+	//
+	// AT DISPLAY RATE, NOT BLOCK RATE. This is a picture — Scope's buffer alone
+	// is 64KB — and sending it every block would be two orders of magnitude
+	// more traffic than anyone can see. Roughly 30 times a second is the
+	// budget, derived from the sample rate so it holds at any block size.
+	//
+	// The pin still compares before sending, so a module sitting idle with an
+	// unchanging buffer costs a memcmp and no traffic at all.
+	void sendDisplayState(int sampleFrames)
+	{
+		if (!displayState || !displayStatePin)
+			return;
+
+		displayStateCountdown -= sampleFrames;
+		if (displayStateCountdown > 0)
+			return;
+
+		displayStateCountdown = (int)(args.sampleRate / displayStateHz);
+
+		displayState->capture(*module, displayStateBytes.data());
+		displayStatePin->setValue(displayStateBytes, getBlockPosition() + sampleFrames - 1);
 	}
 
 	// Push each displayed light's brightness to the editor.
@@ -530,6 +594,17 @@ private:
 	std::deque<gmpi::IntInPin>    menuIntPins;
 	std::deque<gmpi::BoolInPin>   menuBoolPins;
 	std::deque<gmpi::FloatOutPin> lightPins;   // DSP -> editor, one per displayed light
+
+	// DSP -> editor, the state a custom display draws from. Absent unless the
+	// port declared some with RACK_DISPLAY_STATE. std::optional because the
+	// pin registers itself on construction, so it must not be constructed at
+	// all when there is no pin for it in the XML.
+	const DisplayStateCodec*        displayState{};
+	std::optional<gmpi::BlobOutPin> displayStatePin;
+	gmpi::Blob                      displayStateBytes;
+
+	static constexpr float displayStateHz = 30.0f;
+	int                    displayStateCountdown{};
 	PanelLayout                   layout;      // menu targets bound to `module`
 	rack::Module::ProcessArgs     args{};
 };

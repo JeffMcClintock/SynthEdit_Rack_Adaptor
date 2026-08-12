@@ -36,6 +36,10 @@
 #include <cstddef>
 #include <cstdlib>
 #include <deque>
+#include <optional>
+#include <span>
+#include <vector>
+#include <cstdint>
 #include <string>
 
 #include "helpers/GmpiPluginEditor.h"
@@ -44,9 +48,29 @@
 
 #include "RackPanelLayout.h"
 #include "RackNanoVg.h"
+#include "RackDisplayState.h"
 
 namespace rack_adaptor
 {
+
+// The editor end of RACK_DISPLAY_STATE.
+//
+// gmpi::editor::Pin<T> is typed and compares values to decide what to send;
+// this one only ever receives, and receives bytes, so it sits on PinBase
+// directly. (SynthEdit's own Scope4Gui does the same thing for its captures.)
+class DisplayStatePin final : public gmpi::editor::PinBase
+{
+public:
+	std::vector<std::uint8_t> bytes;
+
+	void setFromHost(int32_t /*voice*/, std::span<const std::uint8_t> data) override
+	{
+		bytes.assign(data.begin(), data.end());
+
+		if (onUpdate)
+			onUpdate(this);
+	}
+};
 
 // Rack knobs sweep 300 degrees, centred on 12 o'clock.
 inline constexpr float knobSweepDegrees = 150.0f;
@@ -83,6 +107,11 @@ public:
 		{
 			displayModule.reset(model->createModule());
 			displayWidget.reset(model->createModuleWidget(displayModule.get()));
+
+			// Whatever the port declared with RACK_DISPLAY_STATE. Null for a
+			// module whose panel needs nothing from the DSP, which is most.
+			if (displayModule)
+				displayState = findDisplayState(*displayModule);
 		}
 
 		if (!panelSvg && !layout.panelPath.empty())
@@ -144,6 +173,17 @@ public:
 				}
 			};
 		}
+
+		// The display-state blob is last in the <GUI> pin list, so it is
+		// constructed last. It redraws the whole panel, unlike a light: the
+		// module's own draw() decides what the new state affects and we
+		// cannot know which part of the panel that is.
+		// Constructed whether or not this module sends anything, because the
+		// pin is in the <GUI> list either way and pins are numbered by
+		// construction order. Nothing arrives on it unless the port declared
+		// state with RACK_DISPLAY_STATE.
+		displayStatePin.emplace();
+		displayStatePin->onUpdate = redraw;
 	}
 
 	// A FIXED-SIZE editor: the same answer whatever is offered, availableSize
@@ -277,6 +317,7 @@ private:
 			return;
 
 		pushParametersToDisplayModule();
+		pushDisplayStateToModule();
 
 		NanoVgGraphics backend(g);
 		const auto args = backend.args();
@@ -286,8 +327,15 @@ private:
 			if (!child || !child->visible)
 				continue;
 
-			if (dynamic_cast<rack::ParamWidget*>(child)
-			 || dynamic_cast<rack::PortWidget*>(child)
+			// Ports, lights and the panel are drawn by this editor from the
+			// layout, and their own draw() does nothing in the mock anyway.
+			//
+			// PARAMS ARE WALKED. A control that draws itself is often a
+			// ParamWidget — VCA-1's VU meter is a SliderKnob that renders its
+			// own bars — and skipping the whole class left those blank. The
+			// generic knob body is drawn only for a control that says
+			// isKnob, so the two never both paint the same widget.
+			if (dynamic_cast<rack::PortWidget*>(child)
 			 || dynamic_cast<rack::LightWidget*>(child)
 			 || dynamic_cast<rack::SvgPanel*>(child))
 				continue;
@@ -302,6 +350,23 @@ private:
 
 			nvgRestore(args.vg);
 		}
+	}
+
+	// Unpack whatever the processor last sent into the editor's own module, so
+	// the module's draw() reads it exactly as it would in Rack.
+	//
+	// The size check is not a formality: the two sides agree on the layout only
+	// because both went through the same RACK_DISPLAY_STATE declaration, and a
+	// short or stale blob would be read as garbage members.
+	void pushDisplayStateToModule()
+	{
+		if (!displayState || !displayStatePin || !displayModule)
+			return;
+
+		if (displayStatePin->bytes.size() != displayState->size)
+			return;
+
+		displayState->apply(*displayModule, displayStatePin->bytes.data());
 	}
 
 	// The editor's module instance never runs process(), so its DSP state is
@@ -779,6 +844,11 @@ private:
 	// its own panel does it from this widget.
 	std::unique_ptr<rack::Module>       displayModule;
 	std::unique_ptr<rack::ModuleWidget> displayWidget;
+
+	// DSP state for that widget to draw, and how to unpack it. Both null unless
+	// the port declared some.
+	const DisplayStateCodec*     displayState{};
+	std::optional<DisplayStatePin> displayStatePin;
 
 	int  dragging{ -1 };
 	gmpi::drawing::Point lastMouse{};
