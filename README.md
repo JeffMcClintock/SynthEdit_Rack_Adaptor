@@ -101,13 +101,28 @@ A working GMPI plugin:
 Not yet supported: preset save/load beyond parameters (`dataToJson` is an inert
 stub), lights, custom widgets, and polyphony beyond mono.
 
+Custom widgets are the one to watch. A module that draws its own display —
+Scope's trace, VCA-1's VU meter, Quantizer's note grid — compiles and runs, but
+its `draw()` is never called, because the adaptor's editor renders the panel
+and the standard controls rather than dispatching to a nanovg context. The
+module's *audio* is unaffected; the custom part of its panel is simply blank.
+Event handlers (`onButton`, `onDragHover`, …) are declared and overridable for
+the same reason, and are likewise not yet dispatched.
+
 ## Pieces
 
-- **`rack/plugin.hpp`** — a mock of Rack's `plugin.hpp`: the smallest set of
+- **`rack/rack.hpp`** — a mock of Rack's `rack.hpp`: the smallest set of
   declarations that lets module sources compile unmodified. Written against
   the API surface those sources use; nothing is copied from Rack. Real where
   it matters (`simd::float_4`, `Param`/`Port` storage, the `config*()`
-  metadata capture); inert stubs marked `MOCK` for everything host-side.
+  metadata capture, `IIRFilter`, `dsp::convert`); inert stubs marked `MOCK`
+  for everything host-side.
+- **`compat/`** — third-party headers a Rack module may include directly and
+  that this project does not otherwise depend on. `samplerate.h` is a real
+  linear-interpolation resampler (libsamplerate's API, one channel);
+  `osdialog.h` and `dr_wav.h` are stubs that report "cancelled" and "could not
+  open", which is a path the modules already handle. Each header explains at
+  the top what it does, what it does not, and what to do to make it real.
 - **`RackPanelLayout.h`** — reads every control's position, size, id and range
   out of the module's own `ModuleWidget`.
 - **`RackAdaptor.h`** — `generatePluginXml()` and `RackProcessor`, the generic

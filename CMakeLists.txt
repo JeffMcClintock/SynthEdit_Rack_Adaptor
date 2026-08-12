@@ -20,9 +20,13 @@ add_library(SynthEditRackAdaptor INTERFACE)
 
 # rack/ is on the path so a module's own `#include "plugin.hpp"` resolves to
 # the mock without the module being edited.
+# compat/ supplies the third-party headers Rack modules include directly and
+# that this project does not otherwise depend on — <samplerate.h> (Delay) and
+# <osdialog.h>/"dr_wav.h" (WTVCO, WTLFO). See the comment at the top of each.
 target_include_directories(SynthEditRackAdaptor INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/rack
+    ${CMAKE_CURRENT_SOURCE_DIR}/compat
 )
 
 target_compile_features(SynthEditRackAdaptor INTERFACE cxx_std_20)
@@ -34,5 +38,8 @@ target_sources(SynthEditRackAdaptor INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/RackEditor.h
     ${CMAKE_CURRENT_SOURCE_DIR}/RackPanelLayout.h
     ${CMAKE_CURRENT_SOURCE_DIR}/RackAutoRegister.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/rack/plugin.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/rack/rack.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/compat/samplerate.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/compat/osdialog.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/compat/dr_wav.h
 )

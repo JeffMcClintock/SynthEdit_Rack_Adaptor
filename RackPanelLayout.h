@@ -27,11 +27,12 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "plugin.hpp"
+#include "rack.hpp"
 
 namespace rack_adaptor
 {
@@ -88,6 +89,28 @@ struct MenuOption
 	bool* boolTarget{};   // BoolPtr  — likewise
 	int   defaultValue{};
 
+	// The lambda form of the same two. A module that has to DO something when
+	// the value changes (Merge resizes its channel count) states its menu with
+	// accessors rather than a raw pointer, so both shapes have to be carried.
+	// Whichever is set is the one to write through; the setter wins when both
+	// are, because it is the one that runs the module's own side effects.
+	std::function<void(int)>  setIndex;
+	std::function<void(bool)> setBool;
+
+	void write(int value) const
+	{
+		if (kind == MenuOptionKind::BoolPtr)
+		{
+			if (setBool)          setBool(value != 0);
+			else if (boolTarget) *boolTarget = (value != 0);
+		}
+		else
+		{
+			if (setIndex)     setIndex(value);
+			else if (target) *target = value;
+		}
+	}
+
 	// Position among the options, skipping separators. Offsets the GMPI
 	// parameter id, so a separator never consumes one.
 	int paramIndex{ -1 };
@@ -143,8 +166,9 @@ inline void collectMenu(rack::Menu& menu, PanelLayout& layout, bool bindTargets)
 		{
 			option.kind = MenuOptionKind::IndexPtr;
 			option.labels = item->labels;
-			option.target = bindTargets ? item->target : nullptr;
-			option.defaultValue = *item->target;
+			option.target   = bindTargets ? item->target     : nullptr;
+			option.setIndex = bindTargets ? item->setIndexFn : nullptr;
+			option.defaultValue = item->readIndex();
 			option.paramIndex = paramIndex++;
 			option.slot = intSlot++;
 		}
@@ -152,7 +176,8 @@ inline void collectMenu(rack::Menu& menu, PanelLayout& layout, bool bindTargets)
 		{
 			option.kind = MenuOptionKind::BoolPtr;
 			option.boolTarget = bindTargets ? item->boolTarget : nullptr;
-			option.defaultValue = *item->boolTarget ? 1 : 0;
+			option.setBool    = bindTargets ? item->setBoolFn  : nullptr;
+			option.defaultValue = item->readBool() ? 1 : 0;
 			option.paramIndex = paramIndex++;
 			option.slot = boolSlot++;
 		}
@@ -191,7 +216,7 @@ inline PanelLayout readPanelLayout(rack::Model& model)
 		if (!w || w->paramId < 0 || (std::size_t)w->paramId >= layout.numParams)
 			continue;
 
-		const auto& q = probe->paramQuantities[w->paramId];
+		const auto& q = *probe->paramQuantities[w->paramId];
 
 		layout.params.push_back({
 			w->paramId,

@@ -8,7 +8,7 @@
 // carries names, ranges and defaults, configInput()/configOutput() carry port
 // names. This adaptor constructs one instance, reads that configuration back,
 // and generates the GMPI plugin XML to suit. Per-module code shrinks to:
-// compile upstream's .cpp against rack/plugin.hpp, and one registerModule()
+// compile upstream's .cpp against rack/rack.hpp, and one registerModule()
 // call.
 //
 // Usage (in the plugin's .cpp):
@@ -52,7 +52,7 @@
 #include <string>
 
 #include "Processor.h"
-#include "plugin.hpp"          // the Rack mock (same include upstream compiles against)
+#include "rack.hpp"          // the Rack mock (same include upstream compiles against)
 #include "RackPanelLayout.h"    // where the module says its controls are
 
 namespace rack_adaptor
@@ -184,7 +184,7 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 	x += "  <Parameters>\n";
 	for (size_t i = 0; i < probe->params.size(); ++i)
 	{
-		const auto& q = probe->paramQuantities[i];
+		const auto& q = *probe->paramQuantities[i];
 		x += "    <Parameter id=\"" + std::to_string(i) + "\" name=\"";
 		detail::appendEscaped(x, q.name.empty() ? ("Param " + std::to_string(i)) : q.name);
 		x += "\" datatype=\"float\" default=\"" + detail::formatFloat(q.defaultValue) + "\"/>\n";
@@ -232,7 +232,7 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 	x += "  <GUI graphicsApi=\"GmpiGui\">\n";
 	for (size_t i = 0; i < probe->params.size(); ++i)
 	{
-		const auto& q = probe->paramQuantities[i];
+		const auto& q = *probe->paramQuantities[i];
 		x += "    <Pin name=\"";
 		detail::appendEscaped(x, q.name.empty() ? ("Param " + std::to_string(i)) : q.name);
 		x += "\" private=\"true\" parameterId=\"" + std::to_string(i) + "\" />\n";
@@ -407,10 +407,10 @@ public:
 
 			const size_t slot = static_cast<size_t>(m.slot);
 
-			if (m.kind == MenuOptionKind::IndexPtr && m.target && slot < menuIntPins.size())
-				*m.target = menuIntPins[slot];
-			else if (m.kind == MenuOptionKind::BoolPtr && m.boolTarget && slot < menuBoolPins.size())
-				*m.boolTarget = menuBoolPins[slot];
+			if (m.kind == MenuOptionKind::IndexPtr && slot < menuIntPins.size())
+				m.write(menuIntPins[slot]);
+			else if (m.kind == MenuOptionKind::BoolPtr && slot < menuBoolPins.size())
+				m.write(menuBoolPins[slot] ? 1 : 0);
 		}
 	}
 
