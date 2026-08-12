@@ -112,16 +112,22 @@ namespace detail
 // therefore the space SynthEdit wants. They are rounded because SynthEdit
 // reads `center` with StringToInt.
 //
-// pinBase IS NOT ZERO, and getting it wrong points every jack at the wrong
-// pin. `pinId` indexes SynthEdit's DOCUMENT pin list, which is not the
-// <Audio> list: a module's GUI pins are numbered ahead of its audio pins. So
-// with N parameters (hence N <GUI> pins), audio pin k is document pin N + k.
+// `pinId` is the DSP pin index — a plain 0-based index into the <Audio>
+// section, exactly as the field name (patchpoint_description::dspPin) says.
+// It is NOT the document/connection pin numbering that a host reports when you
+// wire modules together; that one counts a module's GUI pins first, and using
+// it here shifts every jack onto the wrong pin.
 //
-// Determined empirically, and worth re-checking if SynthEdit changes: connect
-// something to the module and see which pin the host says you hit. For Fade
-// (2 params, 3 inputs) In1 is portId 1 and lands on document pin 3.
+// The lookup that settles it is Module_Info::getPinDescriptionById, which
+// searches `plugs` (audio only). GUI pins live in a separate `gui_plugs` map
+// and are never in play. SynthEdit's own SE Patch Point out corroborates:
+// <Audio> is Input, Output and its patch point is pinId="1" — the audio index.
+//
+// Getting this wrong is quiet and nasty rather than an error: the jacks still
+// draw and still accept cables, but each one is wired to a different pin than
+// its label. Inputs behave as outputs, and the last jacks land on parameter
+// pins, which crashes when audio starts.
 inline std::string generatePatchPoints(const PanelLayout& layout,
-                                       std::size_t pinBase,
                                        const RegistrationOptions& opt)
 {
 	std::string pts;
@@ -141,11 +147,11 @@ inline std::string generatePatchPoints(const PanelLayout& layout,
 		     + "\" radius=\"" + std::to_string(radius) + "\" />\n";
 	};
 
-	// Audio pin order is inputs then outputs, shifted past the GUI pins.
+	// Matches the <Audio> section this generator emits: inputs, then outputs.
 	for (const auto& c : layout.inputs)
-		emit(c, pinBase + static_cast<size_t>(c.id));
+		emit(c, static_cast<size_t>(c.id));
 	for (const auto& c : layout.outputs)
-		emit(c, pinBase + layout.numInputs + static_cast<size_t>(c.id));
+		emit(c, layout.numInputs + static_cast<size_t>(c.id));
 
 	if (pts.empty())
 		return {};
@@ -223,11 +229,11 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 	}
 	x += "  </Audio>\n";
 
-	// Jack positions, from the module's own widget. The GUI pins emitted above
-	// are numbered ahead of the audio pins in SynthEdit's document pin list,
-	// so they offset every patch point — see generatePatchPoints.
+	// Jack positions, from the module's own widget. Indexed against the <Audio>
+	// section above, not the host's document pin numbering — see
+	// generatePatchPoints.
 	if (opt.patchPoints)
-		x += generatePatchPoints(readPanelLayout(model), probe->params.size(), opt);
+		x += generatePatchPoints(readPanelLayout(model), opt);
 
 	if (opt.extraXml)
 		x += opt.extraXml;
