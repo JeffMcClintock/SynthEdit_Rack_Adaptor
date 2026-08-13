@@ -124,6 +124,24 @@ public:
 		metrics = panelMetrics(svg.c_str());
 		panelSize = metrics.size;
 
+		// Parse the panel ONCE, here, and keep its geometry.
+		//
+		// This used to call SvgParser::drawFromMemory() every frame, which
+		// re-parses the whole document each time - and a Fundamental panel is
+		// 40-70KB of XML and 70-110 paths. Worse, it was paid even for a tiny
+		// repaint: a blinking LED invalidates only its own lamp rectangle, but
+		// render() still runs, and the clip throws away pixels rather than
+		// work. So every LED blink cost a full panel parse.
+		//
+		// SvgParser::Svg keeps the built geometry between draws and rebuilds
+		// it by itself if the context's factory ever changes.
+		panel.loadFromMemory(svg);
+
+		// The parsed document owns its own copy of the text, and panelMetrics
+		// has already had its look, so this 40KB+ string has no further use.
+		svg.clear();
+		svg.shrink_to_fit();
+
 		// One pin per parameter, in paramId order, matching the <GUI> pin
 		// list generatePluginXml() emits. std::deque because the pins
 		// self-register by address and must never be relocated.
@@ -156,9 +174,15 @@ public:
 
 		// Lights last, matching the <GUI> pin list. These are driven by the
 		// PROCESSOR, not by anything here — see RackProcessor::sendLights.
-		// Their redraw is narrowed to the light's own rectangle: a blinking
-		// LED that invalidated the whole panel would repaint the SVG, the
-		// jacks and every knob several times a second.
+		//
+		// Their redraw is narrowed to the light's own rectangle, which saves
+		// the RASTERISATION of the panel, jacks and knobs. It does not save
+		// the drawing calls: a partial invalidate still runs render(), and the
+		// clip discards pixels rather than work. That distinction used to
+		// matter enormously, because the panel SVG was re-parsed on every one
+		// of those repaints; now the geometry is cached (see `panel`), what is
+		// left is cheap enough that the narrowing is an optimisation rather
+		// than a necessity.
 		for (std::size_t i = 0; i < layout.displayedLightIds.size(); ++i)
 			lightPins.emplace_back();
 
@@ -269,12 +293,12 @@ private:
 		{
 			const auto base = g.getTransform();
 			g.setTransform(gmpi::drawing::makeScale(metrics.drawScale, metrics.drawScale) * base);
-			SvgParser::drawFromMemory(g, svg);
+			panel.draw(g);
 			g.setTransform(base);
 		}
 		else
 		{
-			SvgParser::drawFromMemory(g, svg);
+			panel.draw(g);
 		}
 
 		// The module's own drawing, first pass. Before the jacks and knobs,
@@ -832,7 +856,12 @@ private:
 		float drawScale{ 1.0f };                      // Rack px per CSS px
 	};
 
+	// Only alive during construction - see the constructor. The parsed panel
+	// below owns the document from then on.
 	std::string   svg;
+
+	// The panel, parsed once and holding its geometry between frames.
+	SvgParser::Svg panel;
 	PanelLayout   layout;
 	gmpi::drawing::Size panelSize{ 100.0f, 100.0f };
 	PanelMetrics        metrics;
