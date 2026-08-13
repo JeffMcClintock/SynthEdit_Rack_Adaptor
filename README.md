@@ -181,13 +181,21 @@ define list on semicolons and mangles parentheses.
 
 - **Volts**: GMPI 1.0 = 10V. Audio pins scale ×10 in / ÷10 out so module
   idioms like `cv / 10.f` see real volts. Parameter pins are raw.
-- **`isConnected()` always answers true**, because the adaptor gives every port
-  a buffer. A module that normalises an unpatched input to a fallback reads 0V
-  instead, and this is not cosmetic: VCA-1 multiplies its level by its CV input
-  whenever that input is "connected", so it passes silence until something is
-  patched into CV. GMPI's `isStreaming()` looks like the fix and is not — a
-  connected input holding a steady CV reports false, which would make a real
-  patch look unpatched. Wants a proper connectivity query.
+- **`isConnected()` reports what is really patched**, via the host's
+  `synthedit::IPinConnection` extension, asked once in `open()` and cached.
+  This matters more than it sounds: the adaptor gives every port a buffer, so
+  before the extension existed every input read as connected, and a module that
+  normalises an unpatched input silently changed behaviour. VCA-1 multiplies its
+  level by its CV input whenever that input is "connected", so it passed
+  *silence* until something was patched into CV. Seventeen of Fundamental's
+  thirty-eight read `isConnected()`.
+
+  `isStreaming()` looks like the answer and is not: it reports time-varying
+  audio, so a connected input holding a steady CV reads false and a real patch
+  would look unpatched. The extension asks the graph instead. Caching is safe
+  because SynthEdit rebuilds the DSP graph when a cable changes, constructing a
+  fresh processor — connections cannot move under a live instance. A host that
+  does not offer the extension gets the old everything-connected behaviour.
 - **Lights travel DSP -> GUI as parameters.** A light's brightness is computed
   in `process()`, on the processor's module instance, and the editor owns a
   different one. Each displayed light therefore gets a private, non-persistent
