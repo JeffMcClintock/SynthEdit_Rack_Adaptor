@@ -19,7 +19,8 @@
 // place), never per module:
 //
 //     RACK_MODULE_ID_PREFIX   plugin id is prefix + slug, default "VCV: "
-//     RACK_MODULE_CATEGORY    default "VCV"
+//     RACK_MODULE_CATEGORY    default "Rack/VCV" ("Rack/..." is what the rack
+//                            browser's RackOnly scope lists)
 //     RACK_MODULE_VENDOR      default "VCV (ported)"
 //     RACK_ADAPTOR_NO_GUI      DSP only; skips the editor and its gmpi_ui and
 //                            tinyxml2 dependencies

@@ -18,7 +18,7 @@
 // once per module:
 //
 //     RACK_MODULE_ID_PREFIX   "VCV: "          plugin id is prefix + slug
-//     RACK_MODULE_CATEGORY    "VCV"
+//     RACK_MODULE_CATEGORY    "Rack/VCV"
 //     RACK_MODULE_VENDOR      "VCV (ported)"
 //
 // OPT OUT per module by defining RACK_NO_AUTO_REGISTER before including its
@@ -41,7 +41,10 @@
 #endif
 
 #ifndef RACK_MODULE_CATEGORY
-	#define RACK_MODULE_CATEGORY "VCV"
+	// "Rack/..." is what makes a module show as RACK-COMPATIBLE: SynthEdit's
+	// rack browser scope (ModuleScope::RackOnly, EditorLib/SynthEditAppBase.cpp)
+	// lists prefabs plus modules whose category starts "Rack", nothing else.
+	#define RACK_MODULE_CATEGORY "Rack/VCV"
 #endif
 
 #ifndef RACK_MODULE_VENDOR

@@ -34,6 +34,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>   // stderr diagnostics - the failures below are silent in Release otherwise
 #include <cstdlib>
 #include <deque>
 #include <optional>
@@ -41,6 +42,14 @@
 #include <vector>
 #include <cstdint>
 #include <string>
+
+// Per-editor construction trace. OFF by default; define RACK_ADAPTOR_TRACE=1
+// (the static build plumbs it through as a CMake switch) to see, for every
+// editor built: the slug, whether the model and panel art resolved, and the
+// size that measure() will report. One line per editor, stderr.
+#ifndef RACK_ADAPTOR_TRACE
+	#define RACK_ADAPTOR_TRACE 0
+#endif
 
 #include "helpers/GmpiPluginEditor.h"
 #include "helpers/SvgParser.h"
@@ -89,6 +98,13 @@ public:
 	{
 		auto* model = rack::ModelRegistry::instance().find(slug);
 		assert(model && "VCV model not registered - is the module's .cpp compiled into this plugin?");
+		if (!model)
+		{
+			// The assert above is compiled out of Release, and this failure's
+			// symptom - a 100x100 black rectangle - says nothing about its
+			// cause. Say the cause.
+			std::fprintf(stderr, "RackEditor: no model for slug '%s' - is the module's .cpp compiled into this plugin?\n", slug);
+		}
 		if (model)
 			layout = readPanelLayout(*model);
 
@@ -118,11 +134,42 @@ public:
 			panelSvg = rack::PanelRegistry::instance().find(layout.panelPath);
 
 		assert(panelSvg && "no panel art - is the generated panel-resources header compiled in?");
+		if (!panelSvg)
+		{
+			// Loud in Release too. The classic cause in a STATIC build was the
+			// generated registrations being `inline const bool panel0` in
+			// every module TU - same name, so the linker collapsed 38 of them
+			// to one and 37 panels never registered (fixed in
+			// RackPanelResources.cmake; kept here because the symptom, an
+			// artless 100x100 module, does not name its cause).
+			std::fprintf(stderr, "RackEditor: '%s' has no panel art for '%s' - is its generated panel-resources header compiled in?\n",
+				slug, layout.panelPath.c_str());
+		}
 		if (panelSvg)
 			svg = panelSvg;
 
 		metrics = panelMetrics(svg.c_str());
 		panelSize = metrics.size;
+
+		// A VCV panel is 3U by definition - RACK_GRID_HEIGHT tall, a whole
+		// number of HP wide - so a smaller answer can only mean missing or
+		// unreadable art (panelMetrics' 100x100 fallback). Report rack-sized
+		// anyway: a wrongly-sized module in a rack is a layout casualty on
+		// top of a drawing one, and the floor keeps the second failure from
+		// causing the first. 3HP: wide enough to see and grab.
+		if (panelSize.height < rack::RACK_GRID_HEIGHT || panelSize.width < rack::RACK_GRID_WIDTH)
+		{
+			std::fprintf(stderr, "RackEditor: '%s' panel measured %.0fx%.0f - flooring to rack size\n",
+				slug, panelSize.width, panelSize.height);
+			panelSize.width = (std::max)(panelSize.width, 3.0f * rack::RACK_GRID_WIDTH);
+			panelSize.height = (std::max)(panelSize.height, rack::RACK_GRID_HEIGHT);
+		}
+
+#if RACK_ADAPTOR_TRACE
+		std::fprintf(stderr, "RackEditor: '%s' model=%s art=%s(%s) size=%.0fx%.0f\n",
+			slug, model ? "yes" : "NO", panelSvg ? "yes" : "NO",
+			layout.panelPath.c_str(), panelSize.width, panelSize.height);
+#endif
 
 		// Parse the panel ONCE, here, and keep its geometry.
 		//

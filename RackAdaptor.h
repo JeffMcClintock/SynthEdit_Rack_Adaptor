@@ -18,7 +18,7 @@
 //
 //     namespace {
 //     auto r = rack_adaptor::registerModule("Fade",
-//         { .id = "VCV: Fade", .category = "VCV Fundamental", .vendor = "VCV (ported)" },
+//         { .id = "VCV: Fade", .category = "Rack/VCV Fundamental", .vendor = "VCV (ported)" },
 //         [] { return rack_adaptor::createProcessor("Fade"); });
 //     }
 //
@@ -68,7 +68,10 @@ struct RegistrationOptions
 {
 	const char* id = nullptr;     // GMPI plugin id, e.g. "VCV: Fade"
 	const char* name = nullptr;   // display name; defaults to the slug
-	const char* category = "VCV";
+	const char* category = "Rack/VCV"; // "Rack/..." is what marks a module RACK-COMPATIBLE:
+	                                   // SynthEdit's rack browser scope (ModuleScope::RackOnly,
+	                                   // EditorLib/SynthEditAppBase.cpp) shows prefabs plus
+	                                   // modules whose category starts "Rack".
 	const char* vendor = "VCV (ported)";
 
 	// Patch points are generated from the module's own widget — see

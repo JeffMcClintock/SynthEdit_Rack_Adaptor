@@ -45,10 +45,26 @@ typedef std::string (*CreateXmlPtr)();
 // The id cannot be deferred with it: the factory keys on the id at
 // registration time, so it is passed separately rather than parsed back out of
 // the XML the way gmpi::RegisterPluginWithXml does.
+//
+// TWO IMPLEMENTATIONS, one per build shape - a consumer compiles exactly one:
+//
+//   RackFactory.cpp        the module is its own binary (.gmpi). Registers
+//                          into the adaptor's factory; the XML is built when
+//                          the host's scan asks getPluginInformation().
+//   RackFactoryStatic.cpp  the modules are linked INTO a SynthEdit-based host
+//                          (TIDE Rack). Queues the registration; the host
+//                          calls registerDeferredModules() at startup.
 gmpi::ReturnCode registerPluginLazyXml(
 	gmpi::api::PluginSubtype subType,
 	const char* uniqueId,
 	CreateXmlPtr createXml,
 	gmpi::CreatePluginPtr create);
+
+// STATIC HOSTS ONLY (RackFactoryStatic.cpp): build each queued module's XML
+// and register it through gmpi::RegisterPluginWithXml - which a static host
+// implements itself (SynthEditLib routes it into ModuleFactory()). Call once
+// at startup, AFTER static initialization, which is what makes the deferred
+// XML generation safe. Idempotent; returns how many modules registered.
+int registerDeferredModules();
 
 } // namespace rack_adaptor

@@ -59,3 +59,54 @@ target_sources(SynthEditRackAdaptor INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/compat/osdialog.h
     ${CMAKE_CURRENT_SOURCE_DIR}/compat/dr_wav.h
 )
+
+# ---------------------------------------------------------------------------
+# STATIC HOST SUPPORT (RACK_ADAPTOR_STATIC_HOST=ON; default OFF).
+#
+# For a SynthEdit-based host that links the ported modules INTO its own binary
+# (TIDE Rack) instead of loading them as .gmpi bundles. Such a host already
+# defines gmpi::RegisterPlugin / gmpi::RegisterPluginWithXml (SynthEditLib's
+# UgDatabase.cpp routes both into ModuleFactory()) and owns its entry point,
+# so RackFactory.cpp's definitions would all collide - the static flavour
+# compiles RackFactoryStatic.cpp instead, which only queues the deferred-XML
+# registrations for the host to flush with registerDeferredModules().
+#
+# Nothing here is created by default, so the ordinary .gmpi build is
+# byte-identical with this block present.
+#
+# The consumer provides:
+#   GMPI_SDK          path of the GMPI repo (Core headers)
+#   and does NOT link SynthEditRackAdaptor - the two targets are exclusive
+#     per binary, because each supplies rack_adaptor::registerPluginLazyXml.
+#
+# LICENSING IS UNCHANGED BY LINKAGE SHAPE: this library is GPL-3.0-or-later,
+# and a host that links it statically is too. See LICENSE and README.md.
+option(RACK_ADAPTOR_STATIC_HOST "Provide targets for hosts that link the ported modules statically (TIDE Rack)" OFF)
+
+if(RACK_ADAPTOR_STATIC_HOST)
+    # Usage requirements only - the include dirs and language level, same as
+    # SynthEditRackAdaptor, minus its INTERFACE sources: a source on this
+    # interface would be compiled once per consumer, and the static build has
+    # MANY consumers (one OBJECT library per module) in ONE binary.
+    add_library(SynthEditRackAdaptorStatic INTERFACE)
+    target_include_directories(SynthEditRackAdaptorStatic INTERFACE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/rack
+        ${CMAKE_CURRENT_SOURCE_DIR}/compat
+    )
+    target_compile_features(SynthEditRackAdaptorStatic INTERFACE cxx_std_20)
+
+    # The one copy of the deferred-registration queue. An OBJECT library so
+    # its static state cannot be dead-stripped from an archive, and so exactly
+    # one copy exists however many module object libraries join the link.
+    add_library(RackAdaptorStaticRegistration OBJECT RackFactoryStatic.cpp)
+    target_include_directories(RackAdaptorStaticRegistration PRIVATE
+        ${GMPI_SDK}
+        ${GMPI_SDK}/Core
+    )
+    target_link_libraries(RackAdaptorStaticRegistration PRIVATE SynthEditRackAdaptorStatic)
+    set_target_properties(RackAdaptorStaticRegistration PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        POSITION_INDEPENDENT_CODE ON)
+endif()

@@ -160,6 +160,17 @@ only for a module that declares state. See `RackDisplayState.h`.
   is compiled out - the same arrangement the VST3 wrapper uses. It is the one
   file here that is compiled rather than included.
 - **`RackModule.h`** — the single header a ported module includes.
+- **`RackFactoryStatic.cpp`** - the STATIC-HOST replacement for
+  RackFactory.cpp, for a SynthEdit-based host that links the ported modules
+  into its own binary (TIDE Rack). Such a host already defines the factory
+  entry points - SynthEditLib routes `gmpi::RegisterPluginWithXml` into its
+  `ModuleFactory()` - so this file only QUEUES each deferred registration;
+  the host flushes the queue after static init with
+  `rack_adaptor::registerDeferredModules()`. Configure with
+  `RACK_ADAPTOR_STATIC_HOST=ON` to get the `SynthEditRackAdaptorStatic` +
+  `RackAdaptorStaticRegistration` targets; a binary compiles exactly ONE of
+  the two factory files. Linking statically does not change the licensing:
+  the host binary becomes GPL-3.0-or-later.
 
 ## Configuration
 
@@ -169,7 +180,7 @@ module:
 | Macro | Default | |
 | ----- | ------- | - |
 | `RACK_MODULE_ID_PREFIX` | `"VCV: "` | plugin id is prefix + slug |
-| `RACK_MODULE_CATEGORY`  | `"VCV"`   | |
+| `RACK_MODULE_CATEGORY`  | `"Rack/VCV"` | a category starting `Rack` is what SynthEdit's rack browser scope (`ModuleScope::RackOnly`) lists as rack-compatible |
 | `RACK_MODULE_VENDOR`    | `"VCV (ported)"` | |
 | `RACK_ADAPTOR_NO_GUI`   | unset | DSP only; skips the editor and its gmpi_ui and tinyxml2 dependencies |
 | `RACK_NO_AUTO_REGISTER` | unset | per translation unit: register by hand with `rack_adaptor::registerModule()` |
