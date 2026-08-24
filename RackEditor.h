@@ -336,12 +336,6 @@ private:
 		gmpi::drawing::Graphics g(drawingContext);
 		gmpi::drawing::ClipDrawingToBounds _(g, bounds);
 
-		// The panel does not necessarily cover the whole surface, and a host
-		// is entitled to hand us a dirty one. Cleared BEFORE the centring
-		// translation, so the 2-DIP bands above and below the art are black
-		// rather than stale.
-		g.clear(gmpi::drawing::Colors::Black);
-
 		// Everything from here down is in PANEL coordinates: the whole pass is
 		// shifted so the 380-tall art sits centred in the row-height surface
 		// measure() reported. Pointer input applies the inverse (toPanelSpace)
@@ -349,6 +343,17 @@ private:
 		// three stay registered.
 		const auto untranslated = g.getTransform();
 		g.setTransform(gmpi::drawing::makeTranslation(0.0f, rack::PANEL_CENTRE_OFFSET_Y) * untranslated);
+
+		// An opaque backing behind the PANEL RECT ONLY - a translucent or
+		// missing SVG must never show stale pixels through the art. This used
+		// to be a whole-surface clear, which also painted the centring bands
+		// above and below the art black; unpainted, they stay TRANSPARENT and
+		// the host's own rack (the rails) shows through them, exactly as it
+		// does behind everything a module leaves unpainted in SynthEdit's
+		// panel view.
+		g.fillRectangle(
+			gmpi::drawing::Rect{ 0.0f, 0.0f, panelSize.width, panelSize.height },
+			g.createSolidColorBrush(gmpi::drawing::Colors::Black));
 
 		// Only the panel art is scaled onto Rack's grid. The jacks and knobs
 		// below are already in Rack pixels — they come from the module's own
