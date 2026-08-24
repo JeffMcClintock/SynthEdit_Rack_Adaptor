@@ -166,9 +166,11 @@ public:
 		}
 
 #if RACK_ADAPTOR_TRACE
-		std::fprintf(stderr, "RackEditor: '%s' model=%s art=%s(%s) size=%.0fx%.0f\n",
+		std::fprintf(stderr, "RackEditor: '%s' model=%s art=%s(%s) art-size=%.0fx%.0f reports=%.0fx%.0f offset=%.1f\n",
 			slug, model ? "yes" : "NO", panelSvg ? "yes" : "NO",
-			layout.panelPath.c_str(), panelSize.width, panelSize.height);
+			layout.panelPath.c_str(), panelSize.width, panelSize.height,
+			panelSize.width, (std::max)(panelSize.height, rack::HOST_ROW_HEIGHT),
+			rack::PANEL_CENTRE_OFFSET_Y);
 #endif
 
 		// Parse the panel ONCE, here, and keep its geometry.
@@ -271,7 +273,12 @@ public:
 	gmpi::ReturnCode measure(const gmpi::drawing::Size* /*availableSize*/,
 	                         gmpi::drawing::Size* returnDesiredSize) override
 	{
-		*returnDesiredSize = panelSize;
+		// The FULL row, not the panel: a VCV panel is 380 tall in SynthEdit's
+		// 384 row, and reporting 380 left every VCV module riding 4 DIPs high.
+		// The art is drawn centred in the extra 4 (see rack.hpp,
+		// PANEL_CENTRE_OFFSET_Y) and pointer input is shifted to match.
+		*returnDesiredSize = { panelSize.width,
+			(std::max)(panelSize.height, rack::HOST_ROW_HEIGHT) };
 		return gmpi::ReturnCode::Ok;
 	}
 
@@ -330,8 +337,18 @@ private:
 		gmpi::drawing::ClipDrawingToBounds _(g, bounds);
 
 		// The panel does not necessarily cover the whole surface, and a host
-		// is entitled to hand us a dirty one.
+		// is entitled to hand us a dirty one. Cleared BEFORE the centring
+		// translation, so the 2-DIP bands above and below the art are black
+		// rather than stale.
 		g.clear(gmpi::drawing::Colors::Black);
+
+		// Everything from here down is in PANEL coordinates: the whole pass is
+		// shifted so the 380-tall art sits centred in the row-height surface
+		// measure() reported. Pointer input applies the inverse (toPanelSpace)
+		// and the generated <PatchPoint> centres carry the same offset, so the
+		// three stay registered.
+		const auto untranslated = g.getTransform();
+		g.setTransform(gmpi::drawing::makeTranslation(0.0f, rack::PANEL_CENTRE_OFFSET_Y) * untranslated);
 
 		// Only the panel art is scaled onto Rack's grid. The jacks and knobs
 		// below are already in Rack pixels — they come from the module's own
@@ -356,10 +373,14 @@ private:
 		drawKnobs(g);
 		drawLights(g);
 
+		g.setTransform(untranslated);
+
 		return gmpi::ReturnCode::Ok;
 	}
 
 	// The additive pass: whatever the module draws in drawLayer(args, 1).
+	// Same centring translation as renderBase, or the glow would sit 2 DIPs
+	// above what it glows.
 	gmpi::ReturnCode renderGlow(gmpi::drawing::api::IDeviceContext* drawingContext)
 	{
 		if (!displayWidget)
@@ -368,7 +389,12 @@ private:
 		gmpi::drawing::Graphics g(drawingContext);
 		gmpi::drawing::ClipDrawingToBounds _(g, bounds);
 
+		const auto untranslated = g.getTransform();
+		g.setTransform(gmpi::drawing::makeTranslation(0.0f, rack::PANEL_CENTRE_OFFSET_Y) * untranslated);
+
 		drawModuleWidgets(g, /*layer*/ 1);
+
+		g.setTransform(untranslated);
 
 		return gmpi::ReturnCode::Ok;
 	}
@@ -459,8 +485,18 @@ private:
 
 public:
 
+	// The inverse of the render passes' centring translation: pointer events
+	// arrive in the row-height surface, the layout lives in panel coordinates.
+	// Applied at each handler's ENTRY so every coordinate below one is already
+	// panel-space — hit tests today, anything added later for free.
+	static gmpi::drawing::Point toPanelSpace(gmpi::drawing::Point p)
+	{
+		return { p.x, p.y - rack::PANEL_CENTRE_OFFSET_Y };
+	}
+
 	gmpi::ReturnCode onPointerDown(gmpi::drawing::Point point, int32_t /*flags*/) override
 	{
+		point = toPanelSpace(point);
 		dragging = hitTest(point);
 		lastMouse = point;
 
@@ -472,6 +508,7 @@ public:
 
 	gmpi::ReturnCode onPointerMove(gmpi::drawing::Point point, int32_t /*flags*/) override
 	{
+		point = toPanelSpace(point); // only deltas are used today, but one space per variable
 		if (dragging >= 0)
 		{
 			const auto& c = layout.params[dragging];
@@ -823,6 +860,11 @@ private:
 			          : b;
 			found = true;
 		}
+
+		// Into SURFACE space: the host consumes this rect, and everything the
+		// render passes draw is shifted down by the centring offset.
+		r.top    += rack::PANEL_CENTRE_OFFSET_Y;
+		r.bottom += rack::PANEL_CENTRE_OFFSET_Y;
 
 		return r;
 	}

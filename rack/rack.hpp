@@ -1611,6 +1611,17 @@ namespace color {
 static constexpr float RACK_GRID_WIDTH  = 15.0f;
 static constexpr float RACK_GRID_HEIGHT = 380.0f;
 
+// SynthEdit's rack row is 384 DIPs (it prefers multiples of 12; TIDE's E5
+// ruling), so a VCV panel is 4 DIPs SHORTER than the row it sits in. A ported
+// module therefore reports the FULL row height and draws its 380-tall panel
+// centred in it — otherwise every VCV module rides high in the row with a gap
+// under it. The same offset must reach EVERYTHING positioned in panel
+// coordinates, or they shear apart by 2 DIPs: the drawn art, the editor's
+// pointer hit-testing, and the generated <PatchPoint> centres — SynthEdit
+// hit-tests cables against those, not against anything the editor draws.
+static constexpr float HOST_ROW_HEIGHT       = 384.0f;
+static constexpr float PANEL_CENTRE_OFFSET_Y = (HOST_ROW_HEIGHT - RACK_GRID_HEIGHT) / 2.0f;
+
 inline float mm2px(float mm)  { return mm * (75.0f / 25.4f); }
 inline Vec   mm2px(Vec v)     { return { mm2px(v.x), mm2px(v.y) }; }
 

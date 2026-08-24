@@ -161,9 +161,12 @@ inline std::string generatePatchPoints(const PanelLayout& layout,
 		if (radius <= 0)
 			return;   // no declared size and no override — skip rather than guess
 
+		// + PANEL_CENTRE_OFFSET_Y: the module reports HOST_ROW_HEIGHT and the
+		// editor draws the panel centred in it, so the centres SynthEdit
+		// hit-tests cables against must shift with the art (rack.hpp).
 		pts += "    <PatchPoint pinId=\"" + std::to_string(pinIndex)
 		     + "\" center=\"" + std::to_string(static_cast<int>(std::lround(c.x)))
-		     + ","            + std::to_string(static_cast<int>(std::lround(c.y)))
+		     + ","            + std::to_string(static_cast<int>(std::lround(c.y + rack::PANEL_CENTRE_OFFSET_Y)))
 		     + "\" radius=\"" + std::to_string(radius) + "\" />\n";
 	};
 
