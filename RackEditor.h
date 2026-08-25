@@ -418,8 +418,9 @@ private:
 		drawModuleWidgets(g, /*layer*/ -1);
 
 		drawJacks(g);
+		drawButtons(g);
 		drawKnobs(g);
-		drawLights(g);
+		drawLights(g);   // last: a lit button's lamp sits ON its cap
 
 		g.setTransform(untranslated);
 
@@ -480,8 +481,9 @@ private:
 			// PARAMS ARE WALKED. A control that draws itself is often a
 			// ParamWidget — VCA-1's VU meter is a SliderKnob that renders its
 			// own bars — and skipping the whole class left those blank. The
-			// generic knob body is drawn only for a control that says
-			// isKnob, so the two never both paint the same widget.
+			// generic component body is drawn only for a control that names
+			// one in ParamWidget::art, so the two never both paint the same
+			// widget.
 			if (dynamic_cast<rack::PortWidget*>(child)
 			 || dynamic_cast<rack::LightWidget*>(child)
 			 || dynamic_cast<rack::SvgPanel*>(child))
@@ -565,13 +567,42 @@ public:
 		if (dragging < 0)
 			return gmpi::ReturnCode::Unhandled;   // let the host have it
 
+		// A switch does its whole job on the way DOWN, and does not drag.
+		//
+		// This is Rack's Switch::onDragStart: a momentary button goes to its
+		// maximum while held, and anything else steps to the next position and
+		// wraps at the top — which is what makes a two-position latch toggle.
+		// A click used to do nothing at all here, because only pointer MOVES
+		// wrote a value, and a button that is pressed and released without
+		// moving generates none.
+		const auto& c = layout.params[dragging];
+		if (c.isSwitch)
+		{
+			pressed = dragging;
+
+			if (c.momentary)
+			{
+				setParam(c, c.maxValue);
+			}
+			else
+			{
+				const int steps = c.positions();
+				const float t = c.normalise(value(c.id)) * (float)(steps - 1);
+				const int next = ((int)std::lround(t) + 1) % steps;
+
+				setParam(c, c.denormalise((float)next / (float)(steps - 1)));
+			}
+
+			invalidate();
+		}
+
 		return inputHost ? inputHost->setCapture() : gmpi::ReturnCode::Ok;
 	}
 
 	gmpi::ReturnCode onPointerMove(gmpi::drawing::Point point, int32_t /*flags*/) override
 	{
 		point = toPanelSpace(point); // only deltas are used today, but one space per variable
-		if (dragging >= 0)
+		if (dragging >= 0 && !layout.params[dragging].isSwitch)
 		{
 			const auto& c = layout.params[dragging];
 
@@ -584,10 +615,8 @@ public:
 			                                 (std::min)(c.minValue, c.maxValue),
 			                                 (std::max)(c.minValue, c.maxValue));
 
-			paramPins[c.id] = updated;   // operator= writes through to the host
-
-			if (drawingHost)
-				drawingHost->invalidateRect(nullptr);
+			setParam(c, updated);
+			invalidate();
 		}
 
 		lastMouse = point;
@@ -685,6 +714,19 @@ public:
 	gmpi::ReturnCode onPointerUp(gmpi::drawing::Point /*point*/, int32_t /*flags*/) override
 	{
 		const bool wasDragging = dragging >= 0;
+
+		// Releasing a momentary button drops it back to its minimum — Rack's
+		// Switch::onDragEnd. A latch keeps what the press gave it.
+		if (pressed >= 0)
+		{
+			const auto& c = layout.params[pressed];
+			if (c.momentary)
+				setParam(c, c.minValue);
+
+			pressed = -1;
+			invalidate();
+		}
+
 		dragging = -1;
 
 		if (!wasDragging)
@@ -697,6 +739,35 @@ private:
 	float value(int paramId) const
 	{
 		return (std::size_t)paramId < paramPins.size() ? paramPins[paramId].value : 0.0f;
+	}
+
+	// operator= on the pin writes through to the host.
+	void setParam(const ControlLayout& c, float v)
+	{
+		if ((std::size_t)c.id < paramPins.size())
+			paramPins[c.id] = v;
+	}
+
+	void invalidate()
+	{
+		if (drawingHost)
+			drawingHost->invalidateRect(nullptr);
+	}
+
+	// Is this control showing its PRESSED artwork? Rack's SvgSwitch picks the
+	// frame the same way: a momentary button while the pointer holds it down, a
+	// latch for as long as it sits at its maximum.
+	bool isPressedArt(std::size_t i) const
+	{
+		const auto& c = layout.params[i];
+
+		if (c.momentary)
+			return pressed == (int)i;
+
+		if (c.latch)
+			return value(c.id) >= (std::max)(c.minValue, c.maxValue) - 1e-6f;
+
+		return false;
 	}
 
 	// Index into layout.params, or -1.
@@ -810,14 +881,21 @@ private:
 			const Point centre{ l.x, l.y };
 			const Ellipse lens{ centre, r, r };
 
-			// The unlit lens, always. Rack's GrayModuleLightWidget values,
-			// decoded from sRGB like every other colour that comes from a
+			// The unlit lens, if this light has one — a lamp sunk into a bezel
+			// clears it, and painting one anyway puts a grey disc on the bezel.
+			// Decoded from sRGB like every other colour that comes from a
 			// module — see toColor().
-			auto bg = g.createSolidColorBrush(toColor({ 0.5f, 0.5f, 0.5f, 0.33f }));
-			g.fillEllipse(lens, bg);
+			if (l.bgColor.a > 0.0f)
+			{
+				auto bg = g.createSolidColorBrush(toColor(l.bgColor));
+				g.fillEllipse(lens, bg);
+			}
 
-			auto border = g.createSolidColorBrush(toColor({ 0.0f, 0.0f, 0.0f, 0.15f }));
-			g.drawEllipse(lens, border, (std::max)(0.5f, r * 0.1f));
+			if (l.borderColor.a > 0.0f)
+			{
+				auto border = g.createSolidColorBrush(toColor(l.borderColor));
+				g.drawEllipse(lens, border, 0.5f);
+			}
 
 			const Color lit = mixLight(l);
             if (lit.a <= 0.0f)
@@ -954,7 +1032,7 @@ private:
 		for (const auto& c : layout.params)
 		{
 			// Buttons, latches and switches do not turn, so they get nothing.
-			if (!c.isKnob)
+			if (c.art != rack::ComponentArt::Knob)
 				continue;
 
 			const float r = c.radius();
@@ -980,6 +1058,91 @@ private:
 
 			auto pointer = g.createSolidColorBrush(colorFromHex(c.knobPointerHex));
 			g.drawLine(centre, end, pointer, (std::max)(1.5f, r * 0.15f));
+		}
+	}
+
+	// The buttons — VCVButton and VCVBezel.
+	//
+	// Same story as the knobs and the jacks: Rack composites the component's own
+	// SVG over the panel at runtime and Fundamental's panel art carries none of
+	// it, so without this LFO's INVERT and OFFSET are a bare LED on empty panel.
+	//
+	// Both graphics are concentric circles under a vertical light-to-dark
+	// gradient, straight out of res/ComponentLibrary/VCVButton_0.svg and
+	// VCVBezel.svg. Radii are fractions of the outer radius so a button scales
+	// with whatever size the widget declares:
+	//
+	//   VCVButton (18px)     1.000 black edge  0.916 rim  0.819 cap
+	//   VCVBezel  (21.26px)  1.000 black edge  0.825 rim  0.698 sheen  0.627 well
+	//
+	// VCVButton has a pressed frame and VCVBezel does not — which is Rack's
+	// choice, not an omission here. A bezel's feedback is its LAMP, which is why
+	// every module that uses one puts a light in it.
+	void drawButtons(gmpi::drawing::Graphics& g)
+	{
+		using namespace gmpi::drawing;
+
+		for (std::size_t i = 0; i < layout.params.size(); ++i)
+		{
+			const auto& c = layout.params[i];
+
+			if (c.art != rack::ComponentArt::RoundButton && c.art != rack::ComponentArt::Bezel)
+				continue;
+
+			const float r = c.radius();
+			if (r <= 0.0f)
+				continue;
+
+			const Point centre{ c.x, c.y };
+			const bool  down = isPressedArt(i);
+
+			// A vertical two-stop gradient across a circle of `scale` radii,
+			// lit from above exactly as the artwork is.
+			auto ring = [&](float scale, std::uint32_t topHex, std::uint32_t bottomHex, float alpha = 1.0f)
+			{
+				const float rr = r * scale;
+				const Gradientstop stops[]
+				{
+					{ 0.0f, colorFromHex(topHex, alpha) },
+					{ 1.0f, colorFromHex(bottomHex, alpha) },
+				};
+
+				auto brush = g.createLinearGradientBrush(stops,
+					Point{ centre.x, centre.y - rr },
+					Point{ centre.x, centre.y + rr });
+
+				g.fillEllipse(Ellipse{ centre, rr, rr }, brush);
+			};
+
+			auto flat = [&](float scale, std::uint32_t hex)
+			{
+				auto brush = g.createSolidColorBrush(colorFromHex(hex));
+				g.fillEllipse(Ellipse{ centre, r * scale, r * scale }, brush);
+			};
+
+			flat(1.0f, 0x000000);
+
+			if (c.art == rack::ComponentArt::RoundButton)
+			{
+				// VCVButton_1.svg: the rim loses its silver highlight and the cap
+				// flattens to one shade, which is what reads as "in".
+				if (down)
+				{
+					ring(0.901f, 0x2B2B2B, 0x0D0C0C);
+					flat(0.787f, 0x262626);
+				}
+				else
+				{
+					ring(0.916f, 0x807C7E, 0x0A0A0A);
+					ring(0.819f, 0x4A4747, 0x1F1F1F);
+				}
+			}
+			else
+			{
+				ring(0.825f, 0x787878, 0x474747);
+				ring(0.698f, 0xDEDEDE, 0x6B6B6B, 0.21f);   // the sheen, as in the file
+				ring(0.627f, 0x6C6C6C, 0x5B5B5B);
+			}
 		}
 	}
 
@@ -1039,6 +1202,10 @@ private:
 	int tracedApplies{};
 #endif
 	int  dragging{ -1 };
+
+	// The switch the pointer is currently holding down, or -1. Only a momentary
+	// button needs it for its VALUE; every switch needs it for its ARTWORK.
+	int  pressed{ -1 };
 	gmpi::drawing::Point lastMouse{};
 
 

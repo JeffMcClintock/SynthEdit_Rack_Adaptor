@@ -700,6 +700,27 @@ public:
 
 		const int blockPosition = getBlockPosition() + sampleFrames - 1;
 
+		// ONCE A SECOND, RE-ASSERT EVERY LIGHT even if it has not changed.
+		//
+		// An output pin only transmits on CHANGE, which is right for a light
+		// that animates and wrong for one that latches. INVERT and OFFSET on
+		// the LFO are set once, when the processor is built, and never again -
+		// so that single update is the only one that will ever exist. If the
+		// editor is not listening at that instant it is gone for good: TIDE
+		// drops rack feedback until the editor's controller pointer is set,
+		// and a rack rebuild re-runs the processor's constructor while the
+		// editor is still being rebuilt. Measured 2026-08-25: the same patch
+		// showed OFFSET's lamp lit on one launch and dark on the next, purely
+		// on startup timing.
+		//
+		// A heartbeat makes the channel self-healing instead of exactly-once:
+		// anything missed is corrected within a second, for one float per
+		// light per second.
+		lightRefreshCountdown -= sampleFrames;
+		const bool refresh = lightRefreshCountdown <= 0;
+		if (refresh)
+			lightRefreshCountdown = (int)(args.sampleRate / lightRefreshHz);
+
 		for (std::size_t i = 0; i < lightPins.size(); ++i)
 		{
 			const int id = layout.displayedLightIds[i];
@@ -715,7 +736,15 @@ public:
 					traceSlug.c_str(), id, b);
 			}
 #endif
-			lightPins[i].setValue(std::round(b * 256.0f) / 256.0f, blockPosition);
+			const float quantised = std::round(b * 256.0f) / 256.0f;
+			const bool  changed   = quantised != (float)lightPins[i];
+
+			lightPins[i].setValue(quantised, blockPosition);
+
+			// Unchanged on a heartbeat block: setValue sent nothing, so say it
+			// again explicitly. (Changed values were just sent above.)
+			if (refresh && !changed)
+				lightPins[i].sendPinUpdate(blockPosition);
 		}
 	}
 
@@ -743,6 +772,11 @@ private:
 	const DisplayStateCodec*        displayState{};
 	std::optional<gmpi::BlobOutPin> displayStatePin;
 	gmpi::Blob                      displayStateBytes;
+
+	// See sendLights: how often every light re-asserts its current value, so a
+	// latched one cannot be lost forever to a startup race.
+	static constexpr float lightRefreshHz = 1.0f;
+	int                    lightRefreshCountdown{};
 
 	static constexpr float displayStateHz = 30.0f;
 	int                    displayStateCountdown{};

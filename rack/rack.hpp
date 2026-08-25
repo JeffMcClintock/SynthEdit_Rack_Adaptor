@@ -1947,27 +1947,51 @@ struct SvgPanel : Widget
 	FramebufferWidget* fb{ nullptr };
 	SvgPanel() : fb(new FramebufferWidget) {}
 };
+// Which component graphic the editor should paint for a control.
+//
+// Fundamental's panel SVGs carry NO component artwork — VCA's has not a single
+// circle or ellipse in it — because Rack composites a component SVG over the
+// panel at runtime. The editor therefore draws the component itself, and this
+// says which one. `None` is the default so a control type nobody has
+// classified yet is left blank rather than painted as something it is not.
+enum class ComponentArt
+{
+	None,
+	Knob,          // a turning cap with a pointer line — see the knob*Hex fields
+	RoundButton,   // Rack's res/ComponentLibrary/VCVButton_0.svg, 18px across
+	Bezel,         // Rack's res/ComponentLibrary/VCVBezel.svg,   21.26px across
+};
+
 struct ParamWidget : Widget
 {
 	Module* module{};
 	int paramId{};
 
-	// Does this control turn? The editor draws a pointer line on the ones that
-	// do, since Fundamental's panel art has the knob cap but not the pointer.
-	// A button, latch or switch gets none — Scope's 1x2 and TRIG are latches,
-	// and a pointer on them reads as a tiny broken knob.
-	//
-	// Default false so a control type nobody has classified yet is left plain
-	// rather than decorated with a pointer that means nothing.
-	bool isKnob{ false };
+	// What component graphic to paint. Rack keeps this apart from behaviour
+	// too — VCVButton and VCVBezel are the same Switch in different art.
+	ComponentArt art{ ComponentArt::None };
 
-	// What the knob looks like, as sRGB hex.
+	// Rack's app::Switch, which is a parameter that is CLICKED rather than
+	// turned. Every button, latch and selector switch derives from it; a knob
+	// does not, and that TYPE distinction is the whole of it. LFO's INVERT and
+	// its FM trim are both 0..1 floats and only the widget says which clicks.
 	//
-	// Fundamental's panel SVGs carry NO knob artwork — VCA's has not a single
-	// circle or ellipse in it — because Rack composites a component SVG on top
-	// at runtime. So the editor draws the body as well as the pointer, and
-	// these say what to draw. A black cap with a white pointer is Rack's
-	// RoundBlackKnob family; Trimpot overrides them for its silver cap.
+	//   momentary  maximum while held, minimum again on release
+	//   latch      stays where a click puts it, and shows the PRESSED art
+	//              while it is at maximum
+	//   neither    a multi-position selector: each click steps to the next
+	//              integer position and wraps at the top
+	//
+	// See Switch::onDragStart / onDragEnd, and the flags are left as plain
+	// members under Rack's own names because component sources assign them
+	// directly — Fundamental's VCVBezelBig says `momentary = true`.
+	bool isSwitch{ false };
+	bool momentary{ false };
+	bool latch{ false };
+
+	// What a ComponentArt::Knob looks like, as sRGB hex. The editor draws the
+	// cap and rim as well as the pointer. A black cap with a white pointer is
+	// Rack's RoundBlackKnob family; Trimpot overrides them for its silver cap.
 	uint32_t knobRimHex{ 0x0D0D0D };
 	uint32_t knobBodyHex{ 0x262626 };
 	uint32_t knobPointerHex{ 0xF5F5F5 };
@@ -2016,15 +2040,21 @@ struct LightWidget : Widget
 	bool hasHalo{ true };
 };
 
-// Rack's default appearance for a panel light: a half-grey lens at a third
-// opacity, faintly outlined. Fundamental's plugin.hpp derives its lights from
-// this and calls addBaseColor() per colour.
+// Rack's default appearance for a panel light: a dark grey lens, faintly
+// outlined. Fundamental's plugin.hpp derives its lights from this and calls
+// addBaseColor() per colour, and its VCVBezelLightBig clears both — which is
+// why these travel with the widget rather than being assumed by the editor.
+//
+// The values are Rack 2's (componentlibrary.hpp). Rack 1 had a HALF-grey lens
+// at a third opacity, and that is what this mock used to carry: on a light
+// panel it reads much the same, but on the dark cap of a lit button it paints
+// a pale dot where Rack shows an unbroken cap.
 struct GrayModuleLightWidget : LightWidget
 {
 	GrayModuleLightWidget()
 	{
-		bgColor     = { 0.5f, 0.5f, 0.5f, 0.33f };
-		borderColor = { 0.0f, 0.0f, 0.0f, 0.15f };
+		bgColor     = nvgRGBA(0x33, 0x33, 0x33, 0xFF);
+		borderColor = nvgRGBA(0x00, 0x00, 0x00, 53);
 	}
 };
 
@@ -2134,10 +2164,19 @@ inline void setGlobalSampleRate(float rate)
 
 namespace app {
 
-// A switch built from SVG frames.
-struct SvgSwitch : ParamWidget
+// A parameter that is clicked rather than turned. Everything with a button,
+// latch or selector lineage passes through here, and that is what tells the
+// editor to click it — see ParamWidget::isSwitch.
+struct Switch : ParamWidget
 {
-	bool momentary{ false };
+	Switch() { isSwitch = true; }
+};
+
+// A switch built from SVG frames. The frames themselves go nowhere: the mock
+// has no SVG renderer for component art, and the editor paints the component
+// from ParamWidget::art instead.
+struct SvgSwitch : Switch
+{
 	std::vector<std::shared_ptr<Svg>> frames;
 	void addFrame(std::shared_ptr<Svg> f) { frames.push_back(std::move(f)); }
 };
@@ -2216,60 +2255,105 @@ struct RedGreenBlueLight : GrayModuleLightWidget
 // actual CHILD widget of the button; the effect on what gets painted is the
 // same — as long as the light's own SIZE comes across too.
 //
-// That size is the whole point. A VCVLightLatch is 9mm across and the
-// MediumSimpleLight inside it is 3.176mm. Paint the lamp at the button's size
-// and the entire bezel lights up instead of the LED in the middle of it.
+// That size is the whole point. A VCVLightLatch is 18px across and the
+// MediumSimpleLight inside it is 3mm. Paint the lamp at the button's size and
+// the whole cap lights up instead of the LED in the middle of it.
 struct LightAppearance
 {
 	std::vector<NVGcolor> colors;
 	Vec  size{};
 	bool hasHalo{ true };
+	NVGcolor bgColor{};       // the unlit lens — a bezel light clears both
+	NVGcolor borderColor{};
 };
 
 template<typename TLight>
 inline LightAppearance lightAppearanceOf()
 {
 	TLight probe;
-	return { probe.baseColors, probe.box.size, probe.hasHalo };
+	return { probe.baseColors, probe.box.size, probe.hasHalo, probe.bgColor, probe.borderColor };
 }
 
-// Size classes wrap a colour class. The "Simple" variants differ only in
-// having no halo in Rack, which is not modelled.
+// Size classes wrap a colour class.
+//
+// The plain ones are sized from Rack's own LED artwork, which the mock has no
+// reader for; the "Simple" ones are flat circles at the nominal LED diameter.
+// Both glow — in Rack "Simple" means no SVG lens, not no halo.
 template<typename TBase> struct TinyLight   : TBase { TinyLight()   { this->box.size = mm2px(Vec(1.088f, 1.088f)); } };
 template<typename TBase> struct SmallLight  : TBase { SmallLight()  { this->box.size = mm2px(Vec(2.176f, 2.176f)); } };
 template<typename TBase> struct MediumLight : TBase { MediumLight() { this->box.size = mm2px(Vec(3.176f, 3.176f)); } };
 template<typename TBase> struct LargeLight  : TBase { LargeLight()  { this->box.size = mm2px(Vec(5.179f, 5.179f)); } };
 
-template<typename TBase> struct TinySimpleLight   : TinyLight<TBase>   { TinySimpleLight()   { this->hasHalo = false; } };
-template<typename TBase> struct SmallSimpleLight  : SmallLight<TBase>  { SmallSimpleLight()  { this->hasHalo = false; } };
-template<typename TBase> struct MediumSimpleLight : MediumLight<TBase> { MediumSimpleLight() { this->hasHalo = false; } };
-template<typename TBase> struct LargeSimpleLight  : LargeLight<TBase>  { LargeSimpleLight()  { this->hasHalo = false; } };
+template<typename TBase> struct TinySimpleLight   : TBase { TinySimpleLight()   { this->box.size = mm2px(Vec(1.0f, 1.0f)); } };
+template<typename TBase> struct SmallSimpleLight  : TBase { SmallSimpleLight()  { this->box.size = mm2px(Vec(2.0f, 2.0f)); } };
+template<typename TBase> struct MediumSimpleLight : TBase { MediumSimpleLight() { this->box.size = mm2px(Vec(3.0f, 3.0f)); } };
+template<typename TBase> struct LargeSimpleLight  : TBase { LargeSimpleLight()  { this->box.size = mm2px(Vec(5.0f, 5.0f)); } };
 
-// Controls that are a parameter AND a light in one — a lit button, bezel or
-// slider. They carry both ids.
-struct LightParamWidget : ParamWidget
+// The light half of a control that is a parameter AND a light — a lit button,
+// bezel or slider.
+//
+// A MIXIN, not a base class, because the two ways Rack spells such a control
+// land in different places in the hierarchy: VCVLightLatch<TLight> is a button
+// with a light bolted on, while LightButton<VCVBezelBig, TLight> derives
+// whatever TBase it is handed. Both have to be findable by ONE dynamic_cast in
+// readPanelLayout, and only a mixin gives them a type in common.
+struct LightParamHost
 {
 	int firstLightId{ -1 };
 
 	// Rack builds a child light widget inside the button; this records what
 	// that widget would have looked like, so the editor can paint the lit part
-	// without a widget tree. Filled by the lit-control templates below from
-	// their TLight argument — see lightAppearanceOf().
+	// without a widget tree. Filled from the TLight argument — see
+	// lightAppearanceOf().
 	//
 	// `lightSize` is the LAMP's size, which is much smaller than the button's.
 	std::vector<NVGcolor> lightColors;
 	Vec  lightSize{};
 	bool lightHasHalo{ true };
+	NVGcolor lightBgColor{};
+	NVGcolor lightBorderColor{};
+
+	virtual ~LightParamHost() = default;   // polymorphic, so dynamic_cast finds it
 
 	void setLightAppearance(const LightAppearance& a)
 	{
-		lightColors  = a.colors;
-		lightSize    = a.size;
-		lightHasHalo = a.hasHalo;
+		lightColors      = a.colors;
+		lightSize        = a.size;
+		lightHasHalo     = a.hasHalo;
+		lightBgColor     = a.bgColor;
+		lightBorderColor = a.borderColor;
 	}
 };
 
-struct VCVButton   : ParamWidget { VCVButton()   { box.size = mm2px(Vec(9.0f, 9.0f)); } };
+struct LightParamWidget : ParamWidget, LightParamHost {};
+
+// The buttons.
+//
+// SIZES ARE REAL, and taken from the component art Rack composites over the
+// panel: VCVButton_0.svg is 18px across and VCVBezel.svg 21.26px. They used to
+// be guessed at 9mm (26.6px), half again too big — LFO's INVERT and OFFSET
+// stand 10.8mm apart, so two of those would have overlapped.
+struct VCVButton : app::SvgSwitch { VCVButton() { box.size = Vec(18.0f, 18.0f); art = ComponentArt::RoundButton; momentary = true; } };
+using  LEDButton = VCVButton;
+struct VCVLatch  : VCVButton      { VCVLatch()  { momentary = false; latch = true; } };
+
+struct VCVBezel      : app::SvgSwitch { VCVBezel() { box.size = Vec(21.26f, 21.26f); art = ComponentArt::Bezel; momentary = true; } };
+using  LEDBezel      = VCVBezel;
+struct VCVBezelLatch : VCVBezel       { VCVBezelLatch() { momentary = false; latch = true; } };
+
+// The lamp Rack centres in a VCVBezel: far bigger than an LED, and with no
+// lens of its own, because the bezel around it is the lens.
+template<typename TBase>
+struct VCVBezelLight : TBase
+{
+	VCVBezelLight()
+	{
+		this->bgColor     = color::BLACK_TRANSPARENT;
+		this->borderColor = color::BLACK_TRANSPARENT;
+		this->box.size    = Vec(17.545f, 17.545f);
+	}
+};
+template<typename TBase> using LEDBezelLight = VCVBezelLight<TBase>;
 
 // VCA-1's VU meter is a SliderKnob subclass that draws its own bar graph.
 struct SliderKnob  : ParamWidget { SliderKnob()   { box.size = mm2px(Vec(5.0f, 30.0f)); } };
@@ -2281,44 +2365,54 @@ struct VCVSlider   : SliderKnob  {};
 // Rack's real signature is LightButton<TBase, TLight> deriving TBase, and
 // Fundamental uses both arities: VCVLightBezel<WhiteLight> (one) and
 // LightButton<VCVBezelBig, VCVBezelLightBig<WhiteLight>> (two). Deriving TBase
-// is what makes the two-argument form work, since TBase carries the size and
-// the ParamWidget lineage.
-struct LightButtonBase : ParamWidget { LightButtonBase() { box.size = mm2px(Vec(9.0f, 9.0f)); } };
-
-template<typename TBase = LightButtonBase, typename TLight = WhiteLight>
-struct LightButton : TBase
+// is what makes the two-argument form work, since TBase carries the size, the
+// art and the ParamWidget lineage.
+template<typename TBase = VCVButton, typename TLight = WhiteLight>
+struct LightButton : TBase, LightParamHost
 {
-	int firstLightId{ -1 };
-	std::vector<NVGcolor> lightColors{ lightAppearanceOf<TLight>().colors };
-	Vec  lightSize{ lightAppearanceOf<TLight>().size };
-	bool lightHasHalo{ lightAppearanceOf<TLight>().hasHalo };
+	LightButton() { this->setLightAppearance(lightAppearanceOf<TLight>()); }
 };
 
 template<typename TLight = WhiteLight>
-struct VCVLightButton : LightParamWidget { VCVLightButton() { box.size = mm2px(Vec(9.0f, 9.0f)); setLightAppearance(lightAppearanceOf<TLight>()); } };
+using VCVLightButton = LightButton<VCVButton, TLight>;
+template<typename TLight = WhiteLight>
+using LEDLightButton = VCVLightButton<TLight>;
 
 template<typename TLight = WhiteLight>
-struct VCVLightLatch : LightParamWidget { VCVLightLatch() { box.size = mm2px(Vec(9.0f, 9.0f)); setLightAppearance(lightAppearanceOf<TLight>()); } };
+struct VCVLightLatch : VCVLightButton<TLight>
+{
+	VCVLightLatch() { this->momentary = false; this->latch = true; }
+};
 
 template<typename TLight = WhiteLight>
-struct VCVLightBezel : LightParamWidget { VCVLightBezel() { box.size = mm2px(Vec(9.0f, 9.0f)); setLightAppearance(lightAppearanceOf<TLight>()); } };
+struct VCVLightBezel : LightButton<VCVBezel, VCVBezelLight<TLight>> {};
+template<typename TLight = WhiteLight>
+using LEDLightBezel = VCVLightBezel<TLight>;
+
+template<typename TLight = WhiteLight>
+struct VCVLightBezelLatch : VCVLightBezel<TLight>
+{
+	VCVLightBezelLatch() { this->momentary = false; this->latch = true; }
+};
 
 template<typename TLight = WhiteLight>
 struct VCVLightSlider : LightParamWidget { VCVLightSlider() { box.size = mm2px(Vec(5.0f, 30.0f)); setLightAppearance(lightAppearanceOf<TLight>()); } };
 
 struct ThemedScrew      : Widget {};
-struct RoundBlackKnob   : ParamWidget { RoundBlackKnob()   { box.size = mm2px(Vec(9.5f, 9.5f)); isKnob = true; } };
-struct Trimpot          : ParamWidget { Trimpot()          { box.size = mm2px(Vec(7.0f, 7.0f)); isKnob = true; knobRimHex = 0x8A8A8A; knobBodyHex = 0xC8C8C8; knobPointerHex = 0x1A1A1A; } };
-struct CKSS               : ParamWidget { CKSS()               { box.size = mm2px(Vec(3.5f, 7.0f)); } };
-struct CKSSThreeHorizontal: ParamWidget { CKSSThreeHorizontal(){ box.size = mm2px(Vec(9.5f, 3.5f)); } };
-struct RoundSmallBlackKnob: ParamWidget { RoundSmallBlackKnob(){ box.size = mm2px(Vec(7.0f,  7.0f)); isKnob = true; } };
-struct RoundLargeBlackKnob: ParamWidget { RoundLargeBlackKnob(){ box.size = mm2px(Vec(11.0f, 11.0f)); isKnob = true; } };
-struct RoundHugeBlackKnob : ParamWidget { RoundHugeBlackKnob() { box.size = mm2px(Vec(14.0f, 14.0f)); isKnob = true; } };
+struct RoundBlackKnob   : ParamWidget { RoundBlackKnob()   { box.size = mm2px(Vec(9.5f, 9.5f)); art = ComponentArt::Knob; } };
+// A Trimpot is the same black cap and white pointer as the rest of the family,
+// only smaller: res/ComponentLibrary/Trimpot_bg.svg is a #0A0A0A disc under a
+// dark gradient, and Trimpot.svg — the part that turns — is #EDEDED. It was
+// modelled here the other way round, as a silver cap with a dark pointer.
+struct Trimpot          : ParamWidget { Trimpot()          { box.size = mm2px(Vec(7.0f, 7.0f)); art = ComponentArt::Knob; knobRimHex = 0x0A0A0A; knobBodyHex = 0x2E2E2E; } };
+struct CKSS               : app::SvgSwitch { CKSS()               { box.size = mm2px(Vec(3.5f, 7.0f)); } };
+struct CKSSThreeHorizontal: app::SvgSwitch { CKSSThreeHorizontal(){ box.size = mm2px(Vec(9.5f, 3.5f)); } };
+struct RoundSmallBlackKnob: ParamWidget { RoundSmallBlackKnob(){ box.size = mm2px(Vec(7.0f,  7.0f)); art = ComponentArt::Knob; } };
+struct RoundLargeBlackKnob: ParamWidget { RoundLargeBlackKnob(){ box.size = mm2px(Vec(11.0f, 11.0f)); art = ComponentArt::Knob; } };
+struct RoundHugeBlackKnob : ParamWidget { RoundHugeBlackKnob() { box.size = mm2px(Vec(14.0f, 14.0f)); art = ComponentArt::Knob; } };
 struct ScrewSilver        : Widget      { ScrewSilver()        { box.size = mm2px(Vec(3.0f,  3.0f));  } };
 
-template<typename TLight = WhiteLight>
-struct LEDLightBezel : LightParamWidget { LEDLightBezel() { box.size = mm2px(Vec(9.0f, 9.0f)); setLightAppearance(lightAppearanceOf<TLight>()); } };
-struct CKSSThree        : ParamWidget { CKSSThree()        { box.size = mm2px(Vec(3.5f, 9.5f)); } };
+struct CKSSThree        : app::SvgSwitch { CKSSThree()        { box.size = mm2px(Vec(3.5f, 9.5f)); } };
 
 // 23.7px is the literal size of Rack's res/ComponentLibrary/PJ301M.svg, so
 // the jack the editor draws is the size the real artwork would have been.
