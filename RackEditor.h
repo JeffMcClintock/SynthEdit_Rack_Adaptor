@@ -53,6 +53,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>   // stderr diagnostics - the failures below are silent in Release otherwise
+#include <cstring>  // strchr, for the percentage test in panelMetrics
 #include <cstdlib>
 #include <deque>
 #include <optional>
@@ -1076,6 +1077,41 @@ private:
 
 		const char* w = svgElement->Attribute("width");
 		const char* h = svgElement->Attribute("height");
+
+		// VIEWBOX IS THE FALLBACK, AND FOR SOME AUTHORING TOOLS IT IS THE ONLY
+		// REAL SIZE. An SVG may declare width/height as PERCENTAGES -- "100%"
+		// meaning "fill whatever box you are given" -- and carry its actual
+		// dimensions only in viewBox. Every HetrickCV panel is authored that
+		// way (`width="100%" height="100%" viewBox="0 0 180 380"`), where
+		// Fundamental's carry real numbers.
+		//
+		// Read as a plain length, "100%" parses to 100, so a 12HP panel
+		// measured 100x100 and came out as a ~6HP sliver with its art clipped.
+		// The height was rescued by the caller's rack-size floor, which is
+		// exactly why this looked like a WIDTH bug rather than a parse bug.
+		float vbW = 0.0f, vbH = 0.0f;
+		if (const char* vb = svgElement->Attribute("viewBox"))
+		{
+			float minX = 0.0f, minY = 0.0f;
+			// viewBox is "min-x min-y width height", separated by whitespace
+			// or commas.
+			if (std::sscanf(vb, "%f%*[ ,]%f%*[ ,]%f%*[ ,]%f", &minX, &minY, &vbW, &vbH) != 4)
+				vbW = vbH = 0.0f;
+		}
+
+		const bool wIsRelative = w && std::strchr(w, '%');
+		const bool hIsRelative = h && std::strchr(h, '%');
+
+		// Prefer viewBox whenever width/height cannot answer: absent, or
+		// relative. viewBox units ARE user units, which is what the unit
+		// branch below wants, so no scaling applies.
+		if ((!w || !h || wIsRelative || hIsRelative) && vbW > 0.0f && vbH > 0.0f)
+		{
+			m.size = { vbW, vbH };
+			m.drawScale = 1.0f;
+			return m;
+		}
+
 		if (!w || !h)
 			return m;
 
