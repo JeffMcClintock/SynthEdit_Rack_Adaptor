@@ -239,6 +239,15 @@ public:
 		{
 			lightPins[i].onUpdate = [this, i](gmpi::editor::PinBase*)
 			{
+#if RACK_ADAPTOR_TRACE
+				// First few and then every 100th: a blinking light arrives
+				// continuously, and a one-shot trace cannot distinguish "the
+				// initial default arrived" from "updates are flowing".
+				if (tracedLightArrivals < 3 || 0 == (tracedLightArrivals % 100))
+					std::fprintf(stderr, "RackEditor: light %zu update #%d value %.3f\n",
+						i, tracedLightArrivals, (float)lightPins[i].value);
+				++tracedLightArrivals;
+#endif
 				if (drawingHost)
 				{
 					const auto r = lightBounds((int)i);
@@ -975,6 +984,9 @@ private:
 	const DisplayStateCodec*     displayState{};
 	std::optional<DisplayStatePin> displayStatePin;
 
+#if RACK_ADAPTOR_TRACE
+	int tracedLightArrivals{};
+#endif
 	int  dragging{ -1 };
 	gmpi::drawing::Point lastMouse{};
 

@@ -397,6 +397,17 @@ inline std::string generatePluginXml(rack::Model& model, const RegistrationOptio
 	return x;
 }
 
+// Same per-construction trace switch the editor honours (RackEditor.h). Here
+// it answers the question the editor cannot: is this module's DSP RUNNING?
+// A module the host has culled (nothing downstream reaches an output sink)
+// constructs but never logs "processing", and its lights never move.
+#ifndef RACK_ADAPTOR_TRACE
+	#define RACK_ADAPTOR_TRACE 0
+#endif
+#if RACK_ADAPTOR_TRACE
+	#include <cstdio>
+#endif
+
 // The generic bridge: owns a module built from its Model and drives it with
 // GMPI audio. One instance per plugin instance.
 class RackProcessor : public gmpi::Processor
@@ -404,6 +415,10 @@ class RackProcessor : public gmpi::Processor
 public:
 	explicit RackProcessor(const char* slug)
 	{
+#if RACK_ADAPTOR_TRACE
+		std::fprintf(stderr, "RackProcessor: '%s' constructed\n", slug);
+		traceSlug = slug;
+#endif
 		auto* model = rack::ModelRegistry::instance().find(slug);
 		assert(model && "VCV model not registered - was the upstream .cpp included?");
 
@@ -555,6 +570,13 @@ public:
 
 	void subProcess(int sampleFrames)
 	{
+#if RACK_ADAPTOR_TRACE
+		if (!tracedProcessing)
+		{
+			tracedProcessing = true;
+			std::fprintf(stderr, "RackProcessor: '%s' processing (block %d)\n", traceSlug.c_str(), sampleFrames);
+		}
+#endif
 		// One process() call per sample: Rack's contract is one invocation
 		// per frame with state kept between calls. A virtual call plus a
 		// 4-wide SIMD path per mono sample is the honest price of running
@@ -630,12 +652,25 @@ public:
 				continue;
 
 			const float b = std::clamp(module->lights[id].getBrightness(), 0.0f, 1.0f);
+#if RACK_ADAPTOR_TRACE
+			if (!tracedLight && b > 0.0f)
+			{
+				tracedLight = true;
+				std::fprintf(stderr, "RackProcessor: '%s' first nonzero light: id %d brightness %.3f\n",
+					traceSlug.c_str(), id, b);
+			}
+#endif
 			lightPins[i].setValue(std::round(b * 256.0f) / 256.0f, blockPosition);
 		}
 	}
 
 private:
 	std::unique_ptr<rack::Module> module;
+#if RACK_ADAPTOR_TRACE
+	std::string traceSlug;
+	bool tracedProcessing{};
+	bool tracedLight{};
+#endif
 	std::deque<gmpi::AudioInPin>  audioIns;
 	std::deque<gmpi::AudioOutPin> audioOuts;
 	std::deque<gmpi::FloatInPin>  paramPins;
