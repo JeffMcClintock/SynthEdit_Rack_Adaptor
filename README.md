@@ -21,14 +21,27 @@ copy, what to write, and what to do when it does not compile.
 
 ## Licensing — read this before you build anything
 
-**The adaptor is GPL-3.0-or-later** (see [LICENSE](LICENSE)), and so is
-anything you build with it.
+**The adaptor is DUAL-LICENSED: `ISC OR GPL-3.0-or-later`, at your option**
+(see [LICENSE](LICENSE)). Every file here is Jeff McClintock's copyright — this
+repository contains no VCV Rack code and no VCV artwork — so it can be offered
+under either.
 
-That is deliberate. VCV Rack modules are typically GPL-3.0-or-later, so a
-binary combining one with this adaptor is a combined work that must be
-distributed under GPL-3.0-or-later with corresponding source.
+**The adaptor's licence is not by itself the licence of what you build with
+it.** The modules you compile against it carry their own terms, and the binary
+is a combined work:
 
-If you distribute a plugin built with this, you must:
+| what you combine it with | what you may distribute |
+|---|---|
+| a **GPL** module (VCV's Fundamental, most of the library) | **GPL-3.0-or-later**, with corresponding source — the *module* requires it. Take the adaptor under its GPL option. |
+| a **permissive** module (CC0/MIT/BSD) whose **artwork is also permissive** | **permissive terms** — take the adaptor under ISC. Nothing here forces the GPL. |
+
+It was GPL-only until 2026-08-25, on the reasoning that Rack modules are
+typically GPL so the combination would be GPL anyway. That is still true of most
+of the library, but it made the adaptor look like the source of the obligation
+when the module always was — and it foreclosed the permissive case, which is
+real: HetrickCV and Nonlinear Circuits are CC0 for code *and* panels.
+
+If you distribute a plugin built with a GPL module, you must:
 
 - release it under GPL-3.0-or-later,
 - provide the corresponding source, including your changes,

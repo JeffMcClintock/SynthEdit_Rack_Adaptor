@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: ISC OR GPL-3.0-or-later
 #
 # SynthEdit Rack Adaptor.
 #

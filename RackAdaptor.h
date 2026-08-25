@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: ISC OR GPL-3.0-or-later
 // Copyright 2007-2026 Jeff McClintock.
 //
 // SynthEdit Rack Adaptor — run a VCV Rack module inside a GMPI plugin, generically.
