@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: ISC OR GPL-3.0-or-later
 // Copyright 2007-2026 Jeff McClintock.
 //
 // Read a VCV module's panel layout out of its own ModuleWidget.
