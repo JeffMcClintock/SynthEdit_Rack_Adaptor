@@ -544,6 +544,15 @@ public:
 
 		for (std::size_t i = 0; i < audioOuts.size(); ++i)
 			module->outputs[i].connected = pins.isConnected(static_cast<int32_t>(audioIns.size() + i));
+
+#if RACK_ADAPTOR_TRACE
+		{
+			std::string ins, outs;
+			for (auto& in : module->inputs)  ins  += in.connected  ? '1' : '0';
+			for (auto& out : module->outputs) outs += out.connected ? '1' : '0';
+			std::fprintf(stderr, "RackProcessor: '%s' connections ins=%s outs=%s\n", traceSlug.c_str(), ins.c_str(), outs.c_str());
+		}
+#endif
 	}
 
 	void onSetPins() override
@@ -551,6 +560,21 @@ public:
 		// Parameter pins carry the module's raw values — no scaling.
 		for (size_t i = 0; i < paramPins.size(); ++i)
 			module->params[i].setValue(paramPins[i]);
+
+#if RACK_ADAPTOR_TRACE
+		if (!tracedParams)
+		{
+			tracedParams = true;
+			std::string vals;
+			char buf[32];
+			for (size_t i = 0; i < paramPins.size(); ++i)
+			{
+				std::snprintf(buf, sizeof(buf), "%g ", (float)paramPins[i]);
+				vals += buf;
+			}
+			std::fprintf(stderr, "RackProcessor: '%s' params: %s\n", traceSlug.c_str(), vals.c_str());
+		}
+#endif
 
 		// Menu options write straight into the module member the module itself
 		// handed us in appendContextMenu().
@@ -593,6 +617,26 @@ public:
 				getBuffer(audioOuts[p])[i] = module->outputs[p].getVoltage() / voltsPerUnit;
 		}
 
+#if RACK_ADAPTOR_TRACE
+		// One line per instance the first time any audio input or output is
+		// nonzero - "who is lying about the signal" needs exactly this.
+		if (!tracedSignal)
+		{
+			for (size_t p = 0; p < audioIns.size() && !tracedSignal; ++p)
+				if (getBuffer(audioIns[p])[0] != 0.0f)
+				{
+					std::fprintf(stderr, "RackProcessor: '%s' first NONZERO INPUT pin %zu (%f)\n", traceSlug.c_str(), p, getBuffer(audioIns[p])[0]);
+					tracedSignal = true;
+				}
+			for (size_t p = 0; p < audioOuts.size() && !tracedSignal; ++p)
+				if (getBuffer(audioOuts[p])[0] != 0.0f)
+				{
+					std::fprintf(stderr, "RackProcessor: '%s' first NONZERO OUTPUT pin %zu (%f)\n", traceSlug.c_str(), p, getBuffer(audioOuts[p])[0]);
+					tracedSignal = true;
+				}
+		}
+#endif
+
 		sendLights(sampleFrames);
 		sendDisplayState(sampleFrames);
 	}
@@ -618,6 +662,11 @@ public:
 		displayStateCountdown = (int)(args.sampleRate / displayStateHz);
 
 		displayState->capture(*module, displayStateBytes.data());
+#if RACK_ADAPTOR_TRACE
+		if (tracedDisplaySends < 3 || 0 == (tracedDisplaySends % 100))
+			std::fprintf(stderr, "RackProcessor: '%s' display-state capture #%d (%zu bytes)\n", traceSlug.c_str(), tracedDisplaySends, displayStateBytes.size());
+		++tracedDisplaySends;
+#endif
 		displayStatePin->setValue(displayStateBytes, getBlockPosition() + sampleFrames - 1);
 	}
 
@@ -670,6 +719,9 @@ private:
 	std::string traceSlug;
 	bool tracedProcessing{};
 	bool tracedLight{};
+	bool tracedSignal{};
+	bool tracedParams{};
+	int  tracedDisplaySends{};
 #endif
 	std::deque<gmpi::AudioInPin>  audioIns;
 	std::deque<gmpi::AudioOutPin> audioOuts;

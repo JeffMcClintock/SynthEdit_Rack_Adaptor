@@ -266,7 +266,17 @@ public:
 		if (displayState)
 		{
 			displayStatePin.emplace();
+#if RACK_ADAPTOR_TRACE
+			displayStatePin->onUpdate = [this, redraw](gmpi::editor::PinBase* p)
+			{
+				if (tracedDisplayArrivals < 3 || 0 == (tracedDisplayArrivals % 10))
+					std::fprintf(stderr, "RackEditor: display-state update #%d arrived (%zu bytes)\n", tracedDisplayArrivals, displayStatePin->bytes.size());
+				++tracedDisplayArrivals;
+				redraw(p);
+			};
+#else
 			displayStatePin->onUpdate = redraw;
+#endif
 		}
 	}
 
@@ -342,6 +352,11 @@ public:
 private:
 	gmpi::ReturnCode renderBase(gmpi::drawing::api::IDeviceContext* drawingContext)
 	{
+#if RACK_ADAPTOR_TRACE
+		if (tracedRenders < 3 || 0 == (tracedRenders % 10))
+			std::fprintf(stderr, "RackEditor: render #%d\n", tracedRenders);
+		++tracedRenders;
+#endif
 		gmpi::drawing::Graphics g(drawingContext);
 		gmpi::drawing::ClipDrawingToBounds _(g, bounds);
 
@@ -473,6 +488,20 @@ private:
 	// short or stale blob would be read as garbage members.
 	void pushDisplayStateToModule()
 	{
+#if RACK_ADAPTOR_TRACE
+		const bool trace = (tracedApplies < 3 || 0 == (tracedApplies % 20));
+		++tracedApplies;
+		if (trace)
+		{
+			uint32_t sum = 0;
+			if (displayStatePin)
+				for (size_t i = 0; i < displayStatePin->bytes.size(); i += 257) sum += displayStatePin->bytes[i];
+			std::fprintf(stderr, "RackEditor: apply #%d codec=%s pin=%zu expect=%zu sum=%u\n",
+				tracedApplies - 1, displayState ? "yes" : "NO",
+				displayStatePin ? displayStatePin->bytes.size() : 0,
+				displayState ? displayState->size : 0, sum);
+		}
+#endif
 		if (!displayState || !displayStatePin || !displayModule)
 			return;
 
@@ -986,6 +1015,9 @@ private:
 
 #if RACK_ADAPTOR_TRACE
 	int tracedLightArrivals{};
+	int tracedDisplayArrivals{};
+	int tracedRenders{};
+	int tracedApplies{};
 #endif
 	int  dragging{ -1 };
 	gmpi::drawing::Point lastMouse{};
