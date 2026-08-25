@@ -22,11 +22,29 @@
 // (the DSP .cpp includes it), so its Model is in the registry by the time this
 // runs.
 //
-// WHAT THIS DOES NOT DO: draw the knob caps, jacks or screws. Fundamental's
-// panel SVGs already carry that artwork, so the editor draws only the moving
-// part — an indicator line per knob. Modules whose panels do NOT include the
-// component art will look bare until someone teaches this to render the
-// component types themselves.
+// WHAT THIS DRAWS, and it is more than this comment used to claim. The render
+// path is panel art, then drawModuleWidgets(-1), drawJacks(), drawKnobs(),
+// drawLights(). So the COMPONENTS ARE DRAWN BY THIS EDITOR, from the module's
+// own reported geometry rather than from the panel:
+//
+//   jacks   — drawJacks(), a five-ring VCV-style jack sized from the widget
+//   knobs   — drawKnobs(), rim + body + pointer, coloured by control type
+//   lights  — drawLights()
+//
+// A panel therefore only has to supply background art and labels. A module
+// whose panel omits its component art still gets grabbable controls.
+//
+// WHAT THIS DOES NOT DRAW: screws.
+//
+// This comment previously said the opposite — that only "an indicator line per
+// knob" was drawn and that such panels "will look bare". That was true at
+// d4de897, the initial commit, and stopped being true at 623f1f7 ("Draw the
+// jacks, VCV-style, sized from the module's own widget") on the same day.
+// Nobody updated it, and on 2026-08-25 it cost a licensing review a wrong
+// conclusion: several permissively-licensed packs were assessed as unusable
+// because their panels are labels-only, which this editor makes irrelevant.
+// Kept as a note rather than deleted, because the failure was not the stale
+// sentence but that it sat twelve lines above the code contradicting it.
 
 #pragma once
 
