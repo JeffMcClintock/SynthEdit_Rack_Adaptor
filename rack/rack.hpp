@@ -1542,7 +1542,27 @@ inline void nvgLineCap(NVGcontext*, int) {}
 inline void nvgLineJoin(NVGcontext*, int) {}
 inline void nvgMiterLimit(NVGcontext*, float) {}
 inline void nvgGlobalCompositeOperation(NVGcontext*, int) {}
+// NanoVG blend factors, and the Separate() variant. MOCK: the adaptor draws
+// through GMPI, not NanoVG, so both the enum and the call are inert -- they
+// exist because a module's draw() has to COMPILE. HetrickCV's InverterWidget
+// uses them for its dark-panel inversion, which is unreachable here anyway
+// since settings::preferDarkPanels is statically false.
+enum NVGblendFactor {
+	NVG_ZERO                = 1 << 0,
+	NVG_ONE                 = 1 << 1,
+	NVG_SRC_COLOR           = 1 << 2,
+	NVG_ONE_MINUS_SRC_COLOR = 1 << 3,
+	NVG_DST_COLOR           = 1 << 4,
+	NVG_ONE_MINUS_DST_COLOR = 1 << 5,
+	NVG_SRC_ALPHA           = 1 << 6,
+	NVG_ONE_MINUS_SRC_ALPHA = 1 << 7,
+	NVG_DST_ALPHA           = 1 << 8,
+	NVG_ONE_MINUS_DST_ALPHA = 1 << 9,
+	NVG_SRC_ALPHA_SATURATE  = 1 << 10,
+};
+
 inline void nvgGlobalCompositeBlendFunc(NVGcontext*, int, int) {}
+inline void nvgGlobalCompositeBlendFuncSeparate(NVGcontext*, int, int, int, int) {}
 inline void nvgFillPaint(NVGcontext*, NVGpaint) {}
 inline void nvgTextBox(NVGcontext*, float, float, float, const char*, const char*) {}
 inline NVGpaint nvgLinearGradient(NVGcontext*, float, float, float, float, NVGcolor, NVGcolor) { return {}; }
