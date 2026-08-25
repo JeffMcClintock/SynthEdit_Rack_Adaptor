@@ -1916,9 +1916,16 @@ struct LedDisplaySeparator : Widget {};
 struct LedDisplayChoice : Widget { std::string text; std::string fontPath; Vec textOffset; NVGcolor color{}; NVGcolor bgColor{}; };
 struct LedDisplayTextField : Widget { std::string text; std::string fontPath; Vec textOffset; NVGcolor color{}; };
 
+// MOCK: Rack caches a panel's static art in a FramebufferWidget, and modules
+// add their own decoration into it -- HetrickCV's HCVModuleWidget puts an
+// InverterWidget there. Nothing is cached or drawn here; `fb` exists so those
+// addChild() calls have somewhere to go, and the children are never rendered
+// because RackEditor draws the panel from its SVG directly.
 struct SvgPanel : Widget
 {
 	std::string path;   // resolved against PanelRegistry when it is needed
+	FramebufferWidget* fb{ nullptr };
+	SvgPanel() : fb(new FramebufferWidget) {}
 };
 struct ParamWidget : Widget
 {
@@ -2024,6 +2031,10 @@ struct SvgWidget : Widget
 };
 
 namespace window {
+// Upstream declares Svg in rack::window; this mock declares it in rack. Modules
+// spell it either way (HetrickCV's HCVThemedRogan uses window::Svg), so alias.
+using Svg = ::rack::Svg;
+
 struct Window
 {
 	std::shared_ptr<Font> loadFont(const std::string&) { return nullptr; }
@@ -2056,11 +2067,33 @@ struct Scene : Widget
 	Scene() : rack(new RackWidget) {}
 };
 
+// MOCK of rack::engine::Engine, and the ONE field on it that has to be real.
+//
+// Modules reach the sample rate two ways. Inside process() they get it from
+// ProcessArgs, which RackAdaptor fills from host->getSampleRate() -- that path
+// was always correct. But a DSP helper with no args in scope reads the global
+// APP->engine->getSampleTime() instead, and HetrickCV's HCVTiming does exactly
+// that. A hardcoded 44100 there would silently mistune every module driven by
+// it on any other rate -- the failure that reads as "sounds wrong" rather than
+// "broken", so it must track the host.
+//
+// RackAdaptor::setSampleRate() below keeps it in step with ProcessArgs; the
+// default matches ProcessArgs' own so a module that runs before the first
+// setSampleRate sees a consistent pair rather than a zero.
+struct Engine
+{
+	float sampleRate{ 44100.0f };
+
+	float getSampleRate() const { return sampleRate; }
+	float getSampleTime() const { return 1.0f / sampleRate; }
+};
+
 struct AppContext
 {
 	window::Window* window{ nullptr };
 	Scene* scene{ nullptr };
-	AppContext() : window(new window::Window), scene(new Scene) {}
+	Engine* engine{ nullptr };
+	AppContext() : window(new window::Window), scene(new Scene), engine(new Engine) {}
 };
 
 inline AppContext* appContext()
@@ -2070,6 +2103,14 @@ inline AppContext* appContext()
 }
 
 #define APP (::rack::appContext())
+
+// The single writer for the global engine rate. Called by RackAdaptor when it
+// fills ProcessArgs, so the two can never disagree.
+inline void setGlobalSampleRate(float rate)
+{
+	if (rate > 0.0f)
+		appContext()->engine->sampleRate = rate;
+}
 
 namespace app {
 
@@ -2088,7 +2129,40 @@ struct SvgScrew : Widget {};
 using LightWidget = ::rack::LightWidget;
 using ModuleLightWidget = ::rack::LightWidget;
 
+
+// Rogan — Rack's large knob family, and the reason it needs its own entry is
+// that it is a THREE-LAYER widget: a background, the rotating base, and a
+// foreground highlight. Modules reach `bg` and `fg` directly to theme it
+// (HetrickCV's HCVThemedRogan swaps all three for dark mode), so the members
+// have to exist and be non-null. MOCK: the SVGs are recorded and never drawn --
+// RackEditor draws its own knob from the control's type and position.
+struct Rogan : SvgKnob
+{
+	SvgWidget* bg{ nullptr };
+	SvgWidget* fg{ nullptr };
+	Rogan() : bg(new SvgWidget), fg(new SvgWidget) {}
+	void setSvg(std::shared_ptr<::rack::Svg>) {}   // MOCK
+	virtual void step() {}                          // MOCK; themed knobs override
+};
+
 } // namespace app
+
+// The app widgets modules name unqualified under `using namespace rack;`.
+// Upstream reaches them the same way; the mock keeps them in `app` to match
+// where they are declared, so re-export the ones ported modules actually use.
+using app::SvgSwitch;
+using app::SvgKnob;
+using app::SvgPort;
+using app::SvgScrew;
+using app::Rogan;
+
+// MOCK: Rack's user settings. Only the panel-theme flag is read by ported
+// modules, and a static false means they take their light-theme branch --
+// TIDE has one appearance (PLAN constraint 8, no user skins), so there is
+// nothing for a dark-mode toggle to switch to.
+namespace settings {
+inline bool preferDarkPanels = false;
+}
 
 
 // Rack composes these as MediumLight<RedLight>: the size class wraps the
@@ -2231,6 +2305,12 @@ struct CKSSThree        : ParamWidget { CKSSThree()        { box.size = mm2px(Ve
 struct ThemedPJ301MPort : PortWidget { ThemedPJ301MPort() { box.size = Vec(23.7f, 23.7f); } };
 struct PJ301MPort       : PortWidget { PJ301MPort()       { box.size = Vec(23.7f, 23.7f); } };
 struct PJ3410Port       : PortWidget { PJ3410Port()       { box.size = Vec(31.6f, 31.6f); } };
+
+// Momentary buttons. Sizes are the real components' -- TL1105 is Rack's small
+// tactile button, CKD6 the large one -- so a panel that positions them by
+// centre lands them where the artwork expects.
+struct TL1105 : ParamWidget { TL1105() { box.size = Vec(15.0f, 15.0f); } };
+struct CKD6   : ParamWidget { CKD6()   { box.size = Vec(24.0f, 24.0f); } };
 struct PJNMPort         : PortWidget { PJNMPort()         { box.size = Vec(23.7f, 23.7f); } };
 struct ThemedPJNMPort   : PortWidget { ThemedPJNMPort()   { box.size = Vec(23.7f, 23.7f); } };
 struct CL1362Port       : PortWidget { CL1362Port()       { box.size = Vec(33.0f, 33.0f); } };
@@ -2549,13 +2629,30 @@ struct ModuleWidget : Widget
 
 	void setModule(Module* m) { module = m; }
 
+	// Whatever setPanel() was handed, so getPanel() can return it.
+	Widget* panelWidget{ nullptr };
+
 	void setPanel(Widget* p)
 	{
 		if (auto* svg = dynamic_cast<SvgPanel*>(p))
 			panelPath = svg->path;
 
+		panelWidget = p;
 		addChild(p);
 	}
+
+	// Upstream's second overload: modules that load the Svg themselves pass it
+	// straight in (HetrickCV does, via APP->window->loadSvg). Wrap it in an
+	// SvgPanel so both paths record the same panelPath and getPanel() answers.
+	void setPanel(std::shared_ptr<::rack::Svg> svg)
+	{
+		auto* p = new SvgPanel;
+		if (svg)
+			p->path = svg->path;
+		setPanel(static_cast<Widget*>(p));
+	}
+
+	Widget* getPanel() const { return panelWidget; }
 
 	void addParam(ParamWidget* w) { paramWidgets.push_back(w);  addChild(w); }
 	void addInput(PortWidget* w)  { inputWidgets.push_back(w);  addChild(w); }
@@ -2610,6 +2707,7 @@ struct Model
 };
 
 namespace engine {
+using Engine        = ::rack::Engine;
 using Module        = ::rack::Module;
 using Param         = ::rack::Param;
 using Port          = ::rack::Port;

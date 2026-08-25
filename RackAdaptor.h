@@ -505,6 +505,12 @@ public:
 		{
 			args.sampleRate = host->getSampleRate();
 			args.sampleTime = 1.0f / args.sampleRate;
+
+			// Keep the GLOBAL engine rate in step with ProcessArgs. A DSP
+			// helper with no args in scope reads APP->engine->getSampleTime()
+			// instead -- HetrickCV's HCVTiming does -- and a stale value there
+			// mistunes quietly rather than failing.
+			rack::setGlobalSampleRate(args.sampleRate);
 		}
 
 		readPinConnections(phost);
